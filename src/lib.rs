@@ -62,7 +62,7 @@ pub struct EvalOutput {
 pub enum GhciError {
     /// The evaluation timed out
     ///
-    /// Note: The Ghci session is not in a good state and needs to be killed
+    /// Note: The Ghci session is not be in a good state and needs to be closed
     #[error("ghci session timed out waiting on output")]
     Timeout,
     /// IO error from the underlying child process management

@@ -1,0 +1,18 @@
+[package]
+name = "ghci"
+version = "0.1.0"
+repository = "https://github.com/basile-henry/ghci-rs"
+authors = ["Basile Henry <bjm.henry@gmail.com>"]
+license = "MIT"
+edition = "2021"
+description = "Manage and communicate with ghci (Haskell's GHC interpreter)"
+keywords = ["haskell", "repl", "subprocess", "ffi"]
+categories = ["compilers", "development-tools"]
+
+[dependencies]
+nix = { version = "0.26.2", features = ["poll"], default-features = false }
+nonblock = "0.2.0"
+thiserror = "1.0.44"
+
+[dev-dependencies]
+version-sync = "0.9"

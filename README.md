@@ -4,8 +4,8 @@
  A crate to manage and communicate with `ghci` sessions
 
  ```rust
- let mut ghci = Ghci::new().unwrap();
- let out = ghci.eval("putStrLn \"Hello world\"").unwrap();
+ let mut ghci = Ghci::new()?;
+ let out = ghci.eval("putStrLn \"Hello world\"")?;
  assert_eq!(&out.stdout, "Hello world\n");
  ```
 

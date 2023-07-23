@@ -6,9 +6,14 @@
 //!
 //! ```
 //! # use ghci::Ghci;
-//! let mut ghci = Ghci::new().unwrap();
-//! let out = ghci.eval("putStrLn \"Hello world\"").unwrap();
+//! #
+//! # fn main() -> ghci::Result<()> {
+//! let mut ghci = Ghci::new()?;
+//! let out = ghci.eval("putStrLn \"Hello world\"")?;
 //! assert_eq!(&out.stdout, "Hello world\n");
+//! #
+//! #   Ok(())
+//! # }
 //! ```
 //!
 //! See [`Ghci`] documentation for more examples
@@ -126,9 +131,14 @@ impl Ghci {
     ///
     /// ```
     /// # use ghci::Ghci;
-    /// let mut ghci = Ghci::new().unwrap();
-    /// let out = ghci.eval("putStrLn \"Hello world\"").unwrap();
+    /// #
+    /// # fn main() -> ghci::Result<()> {
+    /// let mut ghci = Ghci::new()?;
+    /// let out = ghci.eval("putStrLn \"Hello world\"")?;
     /// assert_eq!(&out.stdout, "Hello world\n");
+    /// #
+    /// #   Ok(())
+    /// # }
     /// ```
     ///
     /// Multi-line inputs are also supported. The evaluation output may contain both stdout and
@@ -136,7 +146,9 @@ impl Ghci {
     ///
     /// ```
     /// # use ghci::Ghci;
-    /// let mut ghci = Ghci::new().unwrap();
+    /// #
+    /// # fn main() -> ghci::Result<()> {
+    /// let mut ghci = Ghci::new()?;
     /// ghci.import(&["System.IO"]); // imports not supported as part of multi-line inputs
     ///
     /// let out = ghci.eval(r#"
@@ -144,10 +156,13 @@ impl Ghci {
     ///   hPutStrLn stdout "Output on stdout"
     ///   hPutStrLn stderr "Output on stderr"
     ///   hPutStrLn stdout "And a bit more on stdout"
-    /// "#).unwrap();
+    /// "#)?;
     ///
     /// assert_eq!(&out.stderr, "Output on stderr\n");
     /// assert_eq!(&out.stdout, "Output on stdout\nAnd a bit more on stdout\n");
+    /// #
+    /// #   Ok(())
+    /// # }
     /// ```
     ///
     /// # Errors
@@ -208,8 +223,10 @@ impl Ghci {
     /// ```
     /// # use ghci::{Ghci, GhciError};
     /// # use std::time::Duration;
-    /// let mut ghci = Ghci::new().unwrap();
-    /// ghci.import(&["Control.Concurrent"]).unwrap();
+    /// #
+    /// # fn main() -> ghci::Result<()> {
+    /// let mut ghci = Ghci::new()?;
+    /// ghci.import(&["Control.Concurrent"])?;
     ///
     /// let res = ghci.eval("threadDelay 50000");
     /// assert!(matches!(res, Ok(_)));
@@ -218,6 +235,9 @@ impl Ghci {
     ///
     /// let res = ghci.eval("threadDelay 50000");
     /// assert!(matches!(res, Err(GhciError::Timeout)));
+    /// #
+    /// #   Ok(())
+    /// # }
     /// ```
     ///
     /// By default, no timeout is set.
@@ -237,8 +257,13 @@ impl Ghci {
     ///
     /// ```
     /// # use ghci::Ghci;
-    /// let mut ghci = Ghci::new().unwrap();
-    /// ghci.import(&["Data.Char", "Control.Applicative"]).unwrap();
+    /// #
+    /// # fn main() -> ghci::Result<()> {
+    /// let mut ghci = Ghci::new()?;
+    /// ghci.import(&["Data.Char", "Control.Applicative"])?;
+    /// #
+    /// #   Ok(())
+    /// # }
     /// ```
     ///
     /// # Errors

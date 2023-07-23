@@ -10,9 +10,9 @@ keywords = ["haskell", "repl", "subprocess", "ffi"]
 categories = ["compilers", "development-tools"]
 
 [dependencies]
-nix = { version = "0.26.2", features = ["poll"], default-features = false }
-nonblock = "0.2.0"
-thiserror = "1.0.44"
+nix = { version = "0.26.*", features = ["poll"], default-features = false }
+nonblock = "0.2.*"
+thiserror = "~1.0.2"
 
 [dev-dependencies]
-version-sync = "0.9"
+version-sync = "0.9.*"

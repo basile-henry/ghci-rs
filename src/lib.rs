@@ -9,8 +9,8 @@
 //! #
 //! # fn main() -> ghci::Result<()> {
 //! let mut ghci = Ghci::new()?;
-//! let out = ghci.eval("putStrLn \"Hello world\"")?;
-//! assert_eq!(&out.stdout, "Hello world\n");
+//! let out = ghci.eval("1 + 1")?;
+//! assert_eq!(out, "2\n");
 //! #
 //! #   Ok(())
 //! # }
@@ -71,6 +71,14 @@ pub enum GhciError {
     /// Poll error when waiting on ghci stdout/stderr
     #[error("Poll error: {0}")]
     PollError(#[from] nix::errno::Errno),
+    /// The evaluation produced output on stderr (Haskell error)
+    #[error("ghci eval error:\n{stderr}")]
+    EvalError {
+        /// stdout produced before/during the error
+        stdout: String,
+        /// stderr output (the error message)
+        stderr: String,
+    },
 }
 
 /// A convenient alias for [`std::result::Result`] using a [`GhciError`]
@@ -89,7 +97,7 @@ const PROMPT: &str = "__ghci_rust_prompt__>\n";
 ///     .arg("-XOverloadedStrings")
 ///     .build()?;
 /// let out = ghci.eval("1 + 1")?;
-/// assert_eq!(&out.stdout, "2\n");
+/// assert_eq!(out, "2\n");
 /// #
 /// #   Ok(())
 /// # }
@@ -227,29 +235,79 @@ impl Ghci {
 
     /// Evaluate/run a statement
     ///
+    /// Returns only the stdout output. If ghci produces any stderr output (indicating an error),
+    /// an [`EvalError`] is returned instead.
+    ///
+    /// For cases where stderr output is expected and should not be treated as an error,
+    /// use [`eval_raw`] instead.
+    ///
     /// ```
     /// # use ghci::Ghci;
     /// #
     /// # fn main() -> ghci::Result<()> {
     /// let mut ghci = Ghci::new()?;
     /// let out = ghci.eval("putStrLn \"Hello world\"")?;
-    /// assert_eq!(&out.stdout, "Hello world\n");
+    /// assert_eq!(out, "Hello world\n");
     /// #
     /// #   Ok(())
     /// # }
     /// ```
     ///
-    /// Multi-line inputs are also supported. The evaluation output may contain both stdout and
-    /// stderr:
+    /// Haskell errors are surfaced as Rust errors:
+    ///
+    /// ```
+    /// # use ghci::{Ghci, GhciError};
+    /// #
+    /// # fn main() -> ghci::Result<()> {
+    /// let mut ghci = Ghci::new()?;
+    /// let res = ghci.eval("x ::");
+    /// assert!(matches!(res, Err(GhciError::EvalError { .. })));
+    /// #
+    /// #   Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// - Returns an [`EvalError`] if ghci produces output on stderr.
+    /// - Returns a [`Timeout`] if the evaluation timeout (set by [`Ghci::set_timeout`])
+    ///   is reached before the evaluation completes.
+    /// - Returns a [`IOError`] when encounters an IO error on the `ghci` subprocess
+    ///   `stdin`, `stdout`, or `stderr`.
+    /// - Returns a [`PollError`] when waiting for output, if the `ghci` subprocess
+    ///   `stdout` or `stderr` is closed (upon a crash for example)
+    ///
+    /// [`EvalError`]: GhciError::EvalError
+    /// [`Timeout`]: GhciError::Timeout
+    /// [`IOError`]: GhciError::IOError
+    /// [`PollError`]: GhciError::PollError
+    /// [`eval_raw`]: Ghci::eval_raw
+    pub fn eval(&mut self, input: &str) -> Result<String> {
+        let out = self.eval_raw(input)?;
+
+        if out.stderr.is_empty() {
+            Ok(out.stdout)
+        } else {
+            Err(GhciError::EvalError {
+                stdout: out.stdout,
+                stderr: out.stderr,
+            })
+        }
+    }
+
+    /// Evaluate/run a statement, returning both stdout and stderr
+    ///
+    /// Unlike [`eval`], this method does not treat stderr output as an error. This is useful
+    /// when you expect output on stderr (e.g. GHC warnings, debug output via `hPutStrLn stderr`).
     ///
     /// ```
     /// # use ghci::Ghci;
     /// #
     /// # fn main() -> ghci::Result<()> {
     /// let mut ghci = Ghci::new()?;
-    /// ghci.import(&["System.IO"]); // imports not supported as part of multi-line inputs
+    /// ghci.import(&["System.IO"])?;
     ///
-    /// let out = ghci.eval(r#"
+    /// let out = ghci.eval_raw(r#"
     /// do
     ///   hPutStrLn stdout "Output on stdout"
     ///   hPutStrLn stderr "Output on stderr"
@@ -272,10 +330,11 @@ impl Ghci {
     /// - Returns a [`PollError`] when waiting for output, if the `ghci` subprocess
     ///   `stdout` or `stderr` is closed (upon a crash for example)
     ///
+    /// [`eval`]: Ghci::eval
     /// [`Timeout`]: GhciError::Timeout
     /// [`IOError`]: GhciError::IOError
     /// [`PollError`]: GhciError::PollError
-    pub fn eval(&mut self, input: &str) -> Result<EvalOutput> {
+    pub fn eval_raw(&mut self, input: &str) -> Result<EvalOutput> {
         self.stdin.write_all(b":{\n")?;
         self.stdin.write_all(input.as_bytes())?;
         self.stdin.write_all(b"\n:}\n")?;
@@ -455,7 +514,19 @@ mod tests {
     #[test]
     fn parse_error() {
         let mut ghci = Ghci::new().unwrap();
-        let res = ghci.eval("x ::").unwrap();
+        let res = ghci.eval("x ::");
+        match res {
+            Err(GhciError::EvalError { stderr, .. }) => {
+                assert!(stderr.contains("parse error"));
+            }
+            other => panic!("expected EvalError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_error_raw() {
+        let mut ghci = Ghci::new().unwrap();
+        let res = ghci.eval_raw("x ::").unwrap();
         assert!(res.stderr.contains("parse error"));
     }
 }

@@ -25,6 +25,7 @@ use std::io::{ErrorKind, LineWriter, Read, Write};
 use std::os::fd::{AsRawFd, BorrowedFd, RawFd};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 /// A ghci session handle
 ///
@@ -482,6 +483,63 @@ impl Drop for Ghci {
         if self.child.try_wait().unwrap().is_none() {
             self.child.kill().unwrap();
         }
+    }
+}
+
+/// A shared ghci session for use across threads (e.g. in tests)
+///
+/// Wraps a [`Ghci`] session in a `OnceLock<Mutex<...>>` so it can be stored in a `static`
+/// and lazily initialized on first use.
+///
+/// ```
+/// # use ghci::{Ghci, SharedGhci};
+/// #
+/// static GHCI: SharedGhci = SharedGhci::new(|| {
+///     let mut ghci = Ghci::new()?;
+///     ghci.import(&["Data.Char"])?;
+///     Ok(ghci)
+/// });
+///
+/// # fn main() {
+/// let mut ghci = GHCI.lock();
+/// let out = ghci.eval("ord 'A'").unwrap();
+/// assert_eq!(out, "65\n");
+/// # }
+/// ```
+pub struct SharedGhci {
+    inner: OnceLock<Mutex<Ghci>>,
+    init: fn() -> Result<Ghci>,
+}
+
+impl SharedGhci {
+    /// Create a new `SharedGhci` with the given initialization function
+    ///
+    /// The initialization function will be called at most once, on the first call to [`lock`].
+    ///
+    /// [`lock`]: SharedGhci::lock
+    #[must_use]
+    pub const fn new(init: fn() -> Result<Ghci>) -> Self {
+        Self {
+            inner: OnceLock::new(),
+            init,
+        }
+    }
+
+    /// Lock and return a guard to the shared ghci session
+    ///
+    /// Initializes the session on first call.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the initialization function returns an error or the mutex is poisoned.
+    pub fn lock(&self) -> MutexGuard<'_, Ghci> {
+        self.inner
+            .get_or_init(|| {
+                let ghci = (self.init)().expect("SharedGhci initialization failed");
+                Mutex::new(ghci)
+            })
+            .lock()
+            .expect("SharedGhci mutex poisoned")
     }
 }
 

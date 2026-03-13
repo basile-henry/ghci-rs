@@ -32,6 +32,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
+pub mod haskell;
+pub use haskell::{FromHaskell, HaskellParseError, ToHaskell};
+
 /// A ghci session handle
 ///
 /// The session is stateful, so the order of interaction matters
@@ -85,6 +88,9 @@ pub enum GhciError {
         /// stderr output (the error message)
         stderr: String,
     },
+    /// Error parsing Haskell expressions
+    #[error("Haskell parse error: {0}")]
+    HaskellParse(#[from] haskell::HaskellParseError),
 }
 
 /// A convenient alias for [`std::result::Result`] using a [`GhciError`]
@@ -299,6 +305,34 @@ impl Ghci {
                 stderr: out.stderr,
             })
         }
+    }
+
+    /// Evaluate an expression and parse the result as a Rust value
+    ///
+    /// This is a convenience method that calls [`Ghci::eval`] and then parses the output
+    /// using the [`FromHaskell`] trait.
+    ///
+    /// ```
+    /// # use ghci::Ghci;
+    /// #
+    /// # fn main() -> ghci::Result<()> {
+    /// let mut ghci = Ghci::new()?;
+    /// let x: i32 = ghci.eval_as("1 + 1")?;
+    /// assert_eq!(x, 2);
+    /// #
+    /// #   Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// - Returns a [`HaskellParse`] error if the output cannot be parsed as the target type
+    /// - Same errors as [`Ghci::eval`]
+    ///
+    /// [`HaskellParse`]: GhciError::HaskellParse
+    pub fn eval_as<T: FromHaskell>(&mut self, input: &str) -> Result<T> {
+        let output = self.eval(input)?;
+        Ok(T::from_haskell(output.trim_end_matches('\n'))?)
     }
 
     /// Evaluate/run a statement, returning both stdout and stderr
@@ -591,5 +625,45 @@ mod tests {
         let mut ghci = Ghci::new().unwrap();
         let res = ghci.eval_raw("x ::").unwrap();
         assert!(res.stderr.contains("parse error"));
+    }
+
+    #[test]
+    fn eval_as_integer() -> Result<()> {
+        let mut ghci = Ghci::new()?;
+        let x: i32 = ghci.eval_as("1 + 1")?;
+        assert_eq!(x, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn eval_as_boolean() -> Result<()> {
+        let mut ghci = Ghci::new()?;
+        let b: bool = ghci.eval_as("True")?;
+        assert_eq!(b, true);
+        Ok(())
+    }
+
+    #[test]
+    fn eval_as_string() -> Result<()> {
+        let mut ghci = Ghci::new()?;
+        let s: String = ghci.eval_as(r#""hello" ++ " world""#)?;
+        assert_eq!(s, "hello world");
+        Ok(())
+    }
+
+    #[test]
+    fn eval_as_option() -> Result<()> {
+        let mut ghci = Ghci::new()?;
+        let opt: Option<i32> = ghci.eval_as("(Just 42)")?;
+        assert_eq!(opt, Some(42));
+        Ok(())
+    }
+
+    #[test]
+    fn eval_as_vec() -> Result<()> {
+        let mut ghci = Ghci::new()?;
+        let vec: Vec<i32> = ghci.eval_as("[1, 2, 3]")?;
+        assert_eq!(vec, vec![1, 2, 3]);
+        Ok(())
     }
 }

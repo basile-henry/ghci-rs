@@ -23,7 +23,7 @@ use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
 use nonblock::NonBlockingReader;
 use std::io::{ErrorKind, LineWriter, Read, Write};
 use std::os::fd::{AsRawFd, BorrowedFd, RawFd};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 
 /// A ghci session handle
@@ -79,27 +79,107 @@ pub type Result<T> = std::result::Result<T, GhciError>;
 // Use a prompt that is unlikely to be part of the stdout of the ghci session
 const PROMPT: &str = "__ghci_rust_prompt__>\n";
 
-impl Ghci {
-    /// Create a new ghci session
+/// Builder for configuring and creating [`Ghci`] sessions
+///
+/// ```
+/// # use ghci::GhciBuilder;
+/// #
+/// # fn main() -> ghci::Result<()> {
+/// let mut ghci = GhciBuilder::new()
+///     .arg("-XOverloadedStrings")
+///     .build()?;
+/// let out = ghci.eval("1 + 1")?;
+/// assert_eq!(&out.stdout, "2\n");
+/// #
+/// #   Ok(())
+/// # }
+/// ```
+pub struct GhciBuilder {
+    ghci_path: Option<String>,
+    args: Vec<String>,
+    working_dir: Option<PathBuf>,
+}
+
+impl Default for GhciBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl GhciBuilder {
+    /// Create a new builder with default settings
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            ghci_path: None,
+            args: Vec::new(),
+            working_dir: None,
+        }
+    }
+
+    /// Set the path to the ghci binary
     ///
-    /// It will use `ghci` on your `PATH` by default, but can be overridden to use any `ghci` by
-    /// setting the `GHCI_PATH` environment variable pointing at the binary to use
+    /// Overrides the `GHCI_PATH` environment variable. If neither is set, `"ghci"` is used.
+    #[must_use]
+    pub fn ghci_path(mut self, path: impl Into<String>) -> Self {
+        self.ghci_path = Some(path.into());
+        self
+    }
+
+    /// Add a single argument to pass to ghci
+    #[must_use]
+    pub fn arg(mut self, arg: impl Into<String>) -> Self {
+        self.args.push(arg.into());
+        self
+    }
+
+    /// Add multiple arguments to pass to ghci
+    #[must_use]
+    pub fn args(mut self, args: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.args.extend(args.into_iter().map(Into::into));
+        self
+    }
+
+    /// Set the working directory for the ghci process
+    #[must_use]
+    pub fn working_dir(mut self, path: impl Into<PathBuf>) -> Self {
+        self.working_dir = Some(path.into());
+        self
+    }
+
+    /// Build and start the ghci session
     ///
     /// # Errors
     ///
     /// Returns [`IOError`] when it encounters IO errors as part of spawning the `ghci` subprocess
     ///
+    /// # Panics
+    ///
+    /// Panics if the child process stdin, stdout, or stderr pipes are unexpectedly missing.
+    ///
     /// [`IOError`]: GhciError::IOError
-    pub fn new() -> Result<Self> {
+    pub fn build(self) -> Result<Ghci> {
         const PIPE_ERR: &str = "pipe should be present";
 
-        let ghci = std::env::var("GHCI_PATH").unwrap_or_else(|_| "ghci".to_string());
+        let ghci_path = self
+            .ghci_path
+            .or_else(|| std::env::var("GHCI_PATH").ok())
+            .unwrap_or_else(|| "ghci".to_string());
 
-        let mut child = Command::new(ghci)
-            .stdin(Stdio::piped())
+        let mut cmd = Command::new(ghci_path);
+        cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
+            .stderr(Stdio::piped());
+
+        if !self.args.is_empty() {
+            cmd.args(&self.args);
+        }
+
+        if let Some(dir) = self.working_dir {
+            cmd.current_dir(dir);
+        }
+
+        let mut child = cmd.spawn()?;
 
         let mut stdin = LineWriter::new(child.stdin.take().expect(PIPE_ERR));
         let mut stdout = child.stdout.take().expect(PIPE_ERR);
@@ -116,7 +196,7 @@ impl Ghci {
         stdin.write_all(b":set prompt-cont \"\"\n")?;
         clear_blocking_reader_until(&mut stdout, PROMPT.as_bytes())?;
 
-        Ok(Self {
+        Ok(Ghci {
             stdin,
             stdout_fd: stdout.as_raw_fd(),
             stdout: NonBlockingReader::from_fd(stdout)?,
@@ -125,6 +205,24 @@ impl Ghci {
             child,
             timeout: None,
         })
+    }
+}
+
+impl Ghci {
+    /// Create a new ghci session
+    ///
+    /// It will use `ghci` on your `PATH` by default, but can be overridden to use any `ghci` by
+    /// setting the `GHCI_PATH` environment variable pointing at the binary to use.
+    ///
+    /// For more configuration options, see [`GhciBuilder`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IOError`] when it encounters IO errors as part of spawning the `ghci` subprocess
+    ///
+    /// [`IOError`]: GhciError::IOError
+    pub fn new() -> Result<Self> {
+        GhciBuilder::new().build()
     }
 
     /// Evaluate/run a statement

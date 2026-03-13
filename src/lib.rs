@@ -1,6 +1,6 @@
 #![deny(missing_docs)]
 #![warn(clippy::all, clippy::pedantic, clippy::nursery, clippy::cargo)]
-#![doc(html_root_url = "https://docs.rs/ghci/0.1.0")]
+#![doc(html_root_url = "https://docs.rs/ghci/0.2.0")]
 
 //! A crate to manage and communicate with `ghci` sessions
 //!
@@ -16,7 +16,12 @@
 //! # }
 //! ```
 //!
-//! See [`Ghci`] documentation for more examples
+//! See [`Ghci`] documentation for more examples.
+//!
+//! # Platform support
+//!
+//! This crate uses Unix-specific APIs (`nix::poll`, file descriptors) and only supports
+//! Unix platforms (Linux, macOS, BSDs).
 
 use core::time::Duration;
 use nix::poll::{poll, PollFd, PollFlags, PollTimeout};

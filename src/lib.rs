@@ -19,10 +19,10 @@
 //! See [`Ghci`] documentation for more examples
 
 use core::time::Duration;
-use nix::poll::{poll, PollFd, PollFlags};
+use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
 use nonblock::NonBlockingReader;
 use std::io::{ErrorKind, LineWriter, Read, Write};
-use std::os::fd::{AsRawFd, RawFd};
+use std::os::fd::{AsRawFd, BorrowedFd, RawFd};
 use std::path::Path;
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 
@@ -109,7 +109,7 @@ impl Ghci {
 
         // Setup a known prompt/multi-line prompt
         stdin.write_all(b":set prompt \"")?;
-        stdin.write_all(PROMPT[..PROMPT.len() - 1].as_bytes())?;
+        stdin.write_all(&PROMPT.as_bytes()[..PROMPT.len() - 1])?;
         stdin.write_all(b"\\n\"\n")?;
         clear_blocking_reader_until(&mut stdout, PROMPT.as_bytes())?;
 
@@ -168,11 +168,11 @@ impl Ghci {
     /// # Errors
     ///
     /// - Returns a [`Timeout`] if the evaluation timeout (set by [`Ghci::set_timeout`])
-    /// is reached before the evaluation completes.
+    ///   is reached before the evaluation completes.
     /// - Returns a [`IOError`] when encounters an IO error on the `ghci` subprocess
-    /// `stdin`, `stdout`, or `stderr`.
+    ///   `stdin`, `stdout`, or `stderr`.
     /// - Returns a [`PollError`] when waiting for output, if the `ghci` subprocess
-    /// `stdout` or `stderr` is closed (upon a crash for example)
+    ///   `stdout` or `stderr` is closed (upon a crash for example)
     ///
     /// [`Timeout`]: GhciError::Timeout
     /// [`IOError`]: GhciError::IOError
@@ -187,12 +187,16 @@ impl Ghci {
         let timeout = self
             .timeout
             .and_then(|d| d.as_millis().try_into().ok())
-            .unwrap_or(-1);
+            .map_or(PollTimeout::NONE, |ms: i32| {
+                PollTimeout::try_from(ms).unwrap_or(PollTimeout::NONE)
+            });
 
         loop {
+            let stderr_fd = unsafe { BorrowedFd::borrow_raw(self.stderr_fd) };
+            let stdout_fd = unsafe { BorrowedFd::borrow_raw(self.stdout_fd) };
             let mut poll_fds = [
-                PollFd::new(self.stderr_fd, PollFlags::POLLIN),
-                PollFd::new(self.stdout_fd, PollFlags::POLLIN),
+                PollFd::new(stderr_fd, PollFlags::POLLIN),
+                PollFd::new(stdout_fd, PollFlags::POLLIN),
             ];
 
             let ret = poll(&mut poll_fds, timeout)?;
@@ -249,7 +253,7 @@ impl Ghci {
     ///
     /// [`Timeout`]: GhciError::Timeout
     #[inline]
-    pub fn set_timeout(&mut self, timeout: Option<Duration>) {
+    pub const fn set_timeout(&mut self, timeout: Option<Duration>) {
         self.timeout = timeout;
     }
 
@@ -289,7 +293,8 @@ impl Ghci {
         let mut line = String::from(":load");
 
         for path in paths {
-            line.push_str(&format!(" {}", path.display()));
+            use std::fmt::Write as _;
+            let _ = write!(line, " {}", path.display());
         }
 
         self.eval(&line)?;

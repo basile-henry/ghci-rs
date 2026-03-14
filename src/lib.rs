@@ -31,6 +31,7 @@ use std::os::fd::{AsRawFd, BorrowedFd, RawFd};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::time::Instant;
 
 pub mod haskell;
 pub use haskell::{FromHaskell, HaskellParseError, ToHaskell};
@@ -91,6 +92,9 @@ pub enum GhciError {
     /// Error parsing Haskell expressions
     #[error("Haskell parse error: {0}")]
     HaskellParse(#[from] haskell::HaskellParseError),
+    /// Input attempted to change the ghci prompt, which would break the session
+    #[error("disallowed input: {0}")]
+    DisallowedInput(&'static str),
 }
 
 /// A convenient alias for [`std::result::Result`] using a [`GhciError`]
@@ -191,6 +195,10 @@ impl GhciBuilder {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
+        // Always ignore the user's ~/.ghci to ensure the default prompt "> " is present.
+        // Users who need custom .ghci logic can pass their own script via
+        // `.arg("-ghci-script=/path/to/script")`.
+        cmd.arg("-ignore-dot-ghci");
         if !self.args.is_empty() {
             cmd.args(&self.args);
         }
@@ -375,18 +383,19 @@ impl Ghci {
     /// [`IOError`]: GhciError::IOError
     /// [`PollError`]: GhciError::PollError
     pub fn eval_raw(&mut self, input: &str) -> Result<EvalOutput> {
+        if input.trim_start().starts_with(":set prompt") {
+            return Err(GhciError::DisallowedInput(
+                ":set prompt and :set prompt-cont are managed by ghci-rs and cannot be changed",
+            ));
+        }
+
         self.stdin.write_all(b":{\n")?;
         self.stdin.write_all(input.as_bytes())?;
         self.stdin.write_all(b"\n:}\n")?;
 
         let mut stdout = String::new();
         let mut stderr = String::new();
-        let timeout = self
-            .timeout
-            .and_then(|d| d.as_millis().try_into().ok())
-            .map_or(PollTimeout::NONE, |ms: i32| {
-                PollTimeout::try_from(ms).unwrap_or(PollTimeout::NONE)
-            });
+        let deadline = self.timeout.map(|d| Instant::now() + d);
 
         loop {
             let stderr_fd = unsafe { BorrowedFd::borrow_raw(self.stderr_fd) };
@@ -396,7 +405,23 @@ impl Ghci {
                 PollFd::new(stdout_fd, PollFlags::POLLIN),
             ];
 
-            let ret = poll(&mut poll_fds, timeout)?;
+            let poll_timeout = match deadline {
+                None => PollTimeout::NONE,
+                Some(dl) => {
+                    let remaining = dl.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        return Err(GhciError::Timeout);
+                    }
+                    remaining
+                        .as_millis()
+                        .try_into()
+                        .ok()
+                        .and_then(|ms: i32| PollTimeout::try_from(ms).ok())
+                        .unwrap_or(PollTimeout::NONE)
+                }
+            };
+
+            let ret = poll(&mut poll_fds, poll_timeout)?;
 
             if ret == 0 {
                 return Err(GhciError::Timeout);
@@ -665,5 +690,27 @@ mod tests {
         let vec: Vec<i32> = ghci.eval_as("[1, 2, 3]")?;
         assert_eq!(vec, vec![1, 2, 3]);
         Ok(())
+    }
+
+    #[test]
+    fn disallow_set_prompt() {
+        let mut ghci = Ghci::new().unwrap();
+        let res = ghci.eval(":set prompt \"foo> \"");
+        assert!(
+            matches!(res, Err(GhciError::DisallowedInput(_))),
+            "expected DisallowedInput, got {res:?}"
+        );
+    }
+
+    #[test]
+    fn timeout_on_infinite_output() {
+        let mut ghci = Ghci::new().unwrap();
+        ghci.set_timeout(Some(Duration::from_millis(200)));
+        // mapM_ keeps producing output forever — the total-duration timeout must fire
+        let res = ghci.eval("mapM_ print [1..]");
+        assert!(
+            matches!(res, Err(GhciError::Timeout)),
+            "expected Timeout, got {res:?}"
+        );
     }
 }

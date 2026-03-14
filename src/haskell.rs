@@ -628,22 +628,11 @@ impl_from_haskell_tuple!(0 A, 1 B, 2 C, 3 D, 4 E, 5 F, 6 G, 7 H);
 
 /// Skip leading whitespace.
 #[must_use]
-pub fn skip_ws(input: &str) -> &str {
+fn skip_ws(input: &str) -> &str {
     input.trim_start()
 }
 
-/// Strip a prefix after skipping whitespace, returning the remaining input.
-#[must_use]
-pub fn consume_prefix<'a>(input: &'a str, prefix: &str) -> Option<&'a str> {
-    skip_ws(input).strip_prefix(prefix)
-}
-
-/// Parse a constructor name (starts with uppercase), returning `(name, rest)`.
-///
-/// # Errors
-///
-/// Returns [`HaskellParseError`] if no constructor is found.
-pub fn parse_constructor(input: &str) -> Result<(&str, &str), HaskellParseError> {
+fn parse_constructor(input: &str) -> Result<(&str, &str), HaskellParseError> {
     let input = skip_ws(input);
     let first = input
         .chars()
@@ -660,15 +649,8 @@ pub fn parse_constructor(input: &str) -> Result<(&str, &str), HaskellParseError>
     Ok((&input[..end], &input[end..]))
 }
 
-/// Parse Haskell record fields: `{field1 = val1, field2 = val2}`.
-///
-/// Returns `(constructor_already_consumed, fields, rest)` where each field is
-/// a `(name, raw_value_string)` pair. The raw value strings preserve nesting.
-///
-/// # Errors
-///
-/// Returns [`HaskellParseError`] if the record syntax is malformed.
-pub fn parse_record_fields(input: &str) -> Result<(Vec<(&str, &str)>, &str), HaskellParseError> {
+#[allow(clippy::type_complexity)]
+fn parse_record_fields(input: &str) -> Result<(Vec<(&str, &str)>, &str), HaskellParseError> {
     let input = skip_ws(input);
     let rest = input
         .strip_prefix('{')
@@ -791,51 +773,280 @@ fn find_field_end(input: &str) -> Result<usize, HaskellParseError> {
     Ok(input.len())
 }
 
-/// Write a Haskell record expression: `TypeName {field1 = val1, field2 = val2}`.
+// ── ToHaskell builders ────────────────────────────────────────────────
+
+/// Builder for writing Haskell record expressions: `Name {f1 = v1, f2 = v2}`.
 ///
-/// # Errors
-///
-/// Returns [`fmt::Error`] if writing to the buffer fails.
-pub fn write_haskell_record<T: ToHaskell>(
-    buf: &mut impl fmt::Write,
-    name: &str,
-    fields: &[(&str, T)],
-) -> fmt::Result {
-    buf.write_str(name)?;
-    buf.write_str(" {")?;
-    for (i, (field_name, val)) in fields.iter().enumerate() {
-        if i > 0 {
-            buf.write_str(", ")?;
-        }
-        buf.write_str(field_name)?;
-        buf.write_str(" = ")?;
-        val.write_haskell(buf)?;
-    }
-    buf.write_char('}')
+/// Created by [`record`]. Each [`field`](HaskellRecord::field) call can use a
+/// different `ToHaskell` type.
+pub struct HaskellRecord<'a, W: fmt::Write> {
+    buf: &'a mut W,
+    result: fmt::Result,
+    has_fields: bool,
 }
 
-/// Write a Haskell constructor application: `(Constructor arg1 arg2)`.
+/// Start writing a Haskell record expression.
 ///
-/// Parenthesized when there are arguments, bare when there are none.
+/// ```
+/// use ghci::haskell;
+/// use ghci::ToHaskell;
+///
+/// let mut buf = String::new();
+/// haskell::record(&mut buf, "Point")
+///     .field("x", &1u32)
+///     .field("y", &2u32)
+///     .finish()
+///     .unwrap();
+/// assert_eq!(buf, "Point {x = 1, y = 2}");
+/// ```
+pub fn record<'a, W: fmt::Write>(buf: &'a mut W, name: &str) -> HaskellRecord<'a, W> {
+    let result = buf.write_str(name).and_then(|()| buf.write_str(" {"));
+    HaskellRecord {
+        buf,
+        result,
+        has_fields: false,
+    }
+}
+
+impl<W: fmt::Write> HaskellRecord<'_, W> {
+    /// Write a field `name = value`. Each call may use a different `ToHaskell` type.
+    pub fn field<T: ToHaskell>(&mut self, name: &str, value: &T) -> &mut Self {
+        self.result = self.result.and_then(|()| {
+            if self.has_fields {
+                self.buf.write_str(", ")?;
+            }
+            self.buf.write_str(name)?;
+            self.buf.write_str(" = ")?;
+            value.write_haskell(self.buf)
+        });
+        self.has_fields = true;
+        self
+    }
+
+    /// Finish the record expression by writing `}`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`fmt::Error`] if any prior write (including [`field`](Self::field)) failed.
+    pub fn finish(&mut self) -> fmt::Result {
+        self.result.and_then(|()| self.buf.write_char('}'))
+    }
+}
+
+/// Builder for writing Haskell constructor applications: `(Constructor arg1 arg2)`.
+///
+/// Created by [`app`]. Bare constructor (no parens) when there are no args.
+pub struct HaskellApp<'a, W: fmt::Write> {
+    buf: &'a mut W,
+    constructor: &'a str,
+    result: fmt::Result,
+    has_args: bool,
+}
+
+/// Start writing a Haskell constructor application.
+///
+/// ```
+/// use ghci::haskell;
+/// use ghci::ToHaskell;
+///
+/// let mut buf = String::new();
+/// haskell::app(&mut buf, "Pair")
+///     .arg(&1u32)
+///     .arg(&true)
+///     .finish()
+///     .unwrap();
+/// assert_eq!(buf, "(Pair 1 True)");
+/// ```
+pub const fn app<'a, W: fmt::Write>(buf: &'a mut W, constructor: &'a str) -> HaskellApp<'a, W> {
+    HaskellApp {
+        buf,
+        constructor,
+        result: Ok(()),
+        has_args: false,
+    }
+}
+
+impl<W: fmt::Write> HaskellApp<'_, W> {
+    /// Write an argument. Each call may use a different `ToHaskell` type.
+    pub fn arg<T: ToHaskell>(&mut self, value: &T) -> &mut Self {
+        self.result = self.result.and_then(|()| {
+            if !self.has_args {
+                self.buf.write_char('(')?;
+                self.buf.write_str(self.constructor)?;
+            }
+            self.buf.write_char(' ')?;
+            value.write_haskell(self.buf)
+        });
+        self.has_args = true;
+        self
+    }
+
+    /// Finish the application. Writes bare constructor if no args, closing `)` otherwise.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`fmt::Error`] if any prior write failed.
+    pub fn finish(&mut self) -> fmt::Result {
+        self.result.and_then(|()| {
+            if self.has_args {
+                self.buf.write_char(')')
+            } else {
+                self.buf.write_str(self.constructor)
+            }
+        })
+    }
+}
+
+// ── FromHaskell helpers ──────────────────────────────────────────────
+
+/// Parsed record fields, returned by [`parse_record`].
+///
+/// Use [`field`](RecordFields::field) to extract typed values by name.
+pub struct RecordFields<'a> {
+    fields: Vec<(&'a str, &'a str)>,
+}
+
+/// Parse a Haskell record expression, checking the constructor name.
+///
+/// Returns the parsed fields and remaining input.
+///
+/// ```
+/// use ghci::haskell;
+/// use ghci::FromHaskell;
+///
+/// let (rec, rest) = haskell::parse_record("Point", "Point {x = 1, y = 2}").unwrap();
+/// let x: u32 = rec.field("x").unwrap();
+/// let y: u32 = rec.field("y").unwrap();
+/// assert_eq!((x, y), (1, 2));
+/// assert_eq!(rest, "");
+/// ```
 ///
 /// # Errors
 ///
-/// Returns [`fmt::Error`] if writing to the buffer fails.
-pub fn write_haskell_app<T: ToHaskell>(
-    buf: &mut impl fmt::Write,
+/// Returns [`HaskellParseError`] if the constructor doesn't match or the record syntax is malformed.
+pub fn parse_record<'a>(
     constructor: &str,
-    args: &[T],
-) -> fmt::Result {
-    if args.is_empty() {
-        buf.write_str(constructor)
-    } else {
-        buf.write_char('(')?;
-        buf.write_str(constructor)?;
-        for arg in args {
-            buf.write_char(' ')?;
-            arg.write_haskell(buf)?;
+    input: &'a str,
+) -> Result<(RecordFields<'a>, &'a str), HaskellParseError> {
+    let input = skip_ws(input);
+    let (name, rest) = parse_constructor(input)?;
+    if name != constructor {
+        return Err(HaskellParseError::ParseError {
+            message: format!("expected constructor {constructor:?}, got {name:?}"),
+        });
+    }
+    let (fields, rest) = parse_record_fields(rest)?;
+    Ok((RecordFields { fields }, rest))
+}
+
+impl RecordFields<'_> {
+    /// Look up a field by name and parse its value.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HaskellParseError`] if the field is not found or its value cannot be parsed.
+    pub fn field<T: FromHaskell>(&self, name: &str) -> Result<T, HaskellParseError> {
+        let raw = self
+            .fields
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, v)| *v)
+            .ok_or_else(|| HaskellParseError::ParseError {
+                message: format!("field {name:?} not found"),
+            })?;
+        T::from_haskell(raw)
+    }
+}
+
+/// Streaming parser for Haskell constructor applications, returned by [`parse_app`].
+///
+/// Use [`arg`](AppParser::arg) to parse each positional argument in order,
+/// then [`finish`](AppParser::finish) to consume the closing `)`.
+pub struct AppParser<'a> {
+    rest: &'a str,
+    in_parens: bool,
+}
+
+/// Parse a Haskell constructor application, checking the constructor name.
+///
+/// Handles both `(Constructor arg1 arg2)` (parenthesized) and bare `Constructor`.
+///
+/// ```
+/// use ghci::haskell;
+/// use ghci::FromHaskell;
+///
+/// let mut p = haskell::parse_app("Pair", "(Pair 1 True)").unwrap();
+/// let x: u32 = p.arg().unwrap();
+/// let b: bool = p.arg().unwrap();
+/// let rest = p.finish().unwrap();
+/// assert_eq!((x, b), (1, true));
+/// assert_eq!(rest, "");
+/// ```
+///
+/// # Errors
+///
+/// Returns [`HaskellParseError`] if the constructor doesn't match.
+pub fn parse_app<'a>(
+    constructor: &str,
+    input: &'a str,
+) -> Result<AppParser<'a>, HaskellParseError> {
+    let input = skip_ws(input);
+    // Try parenthesized: (Constructor ...)
+    if let Some(inner) = input.strip_prefix('(') {
+        let inner = skip_ws(inner);
+        let (name, rest) = parse_constructor(inner)?;
+        if name != constructor {
+            return Err(HaskellParseError::ParseError {
+                message: format!("expected constructor {constructor:?}, got {name:?}"),
+            });
         }
-        buf.write_char(')')
+        return Ok(AppParser {
+            rest,
+            in_parens: true,
+        });
+    }
+    // Bare constructor
+    let (name, rest) = parse_constructor(input)?;
+    if name != constructor {
+        return Err(HaskellParseError::ParseError {
+            message: format!("expected constructor {constructor:?}, got {name:?}"),
+        });
+    }
+    Ok(AppParser {
+        rest,
+        in_parens: false,
+    })
+}
+
+impl<'a> AppParser<'a> {
+    /// Parse the next positional argument.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HaskellParseError`] if the argument cannot be parsed.
+    pub fn arg<T: FromHaskell>(&mut self) -> Result<T, HaskellParseError> {
+        let (val, rest) = T::parse_haskell(self.rest)?;
+        self.rest = rest;
+        Ok(val)
+    }
+
+    /// Finish parsing, consuming the closing `)` if the application was parenthesized.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HaskellParseError`] if a closing `)` is expected but not found.
+    pub fn finish(self) -> Result<&'a str, HaskellParseError> {
+        let rest = skip_ws(self.rest);
+        if self.in_parens {
+            rest.strip_prefix(')')
+                .ok_or_else(|| HaskellParseError::ParseError {
+                    message: format!(
+                        "expected closing ')' for constructor application, got {rest:?}"
+                    ),
+                })
+        } else {
+            Ok(rest)
+        }
     }
 }
 
@@ -1042,54 +1253,152 @@ mod tests {
         assert!(matches!(res, Err(HaskellParseError::TrailingInput { .. })));
     }
 
-    // ── Helper function tests ────────────────────────────────────────
+    // ── Builder tests ──────────────────────────────────────────────────
 
     #[test]
-    fn test_write_haskell_record() {
+    fn record_builder_single_field() {
         let mut buf = String::new();
-        write_haskell_record(&mut buf, "Foo", &[("bar", 42u32)]).unwrap();
+        record(&mut buf, "Foo")
+            .field("bar", &42u32)
+            .finish()
+            .unwrap();
         assert_eq!(buf, "Foo {bar = 42}");
-
-        buf.clear();
-        write_haskell_record(&mut buf, "Bar", &[("baz", true)]).unwrap();
-        assert_eq!(buf, "Bar {baz = True}");
     }
 
     #[test]
-    fn test_write_haskell_app() {
+    fn record_builder_mixed_types() {
         let mut buf = String::new();
-        write_haskell_app::<u32>(&mut buf, "Foo", &[]).unwrap();
-        assert_eq!(buf, "Foo");
-
-        buf.clear();
-        write_haskell_app(&mut buf, "Foo", &[42u32]).unwrap();
-        assert_eq!(buf, "(Foo 42)");
-
-        buf.clear();
-        write_haskell_app(&mut buf, "Bar", &[true]).unwrap();
-        assert_eq!(buf, "(Bar True)");
+        record(&mut buf, "Point")
+            .field("x", &1u32)
+            .field("y", &2.5f64)
+            .field("label", &"origin")
+            .finish()
+            .unwrap();
+        assert_eq!(buf, r#"Point {x = 1, y = 2.5, label = "origin"}"#);
     }
 
     #[test]
-    fn test_parse_constructor() {
-        let (name, rest) = parse_constructor("Just 42").unwrap();
-        assert_eq!(name, "Just");
-        assert_eq!(rest, " 42");
+    fn record_builder_no_fields() {
+        let mut buf = String::new();
+        record(&mut buf, "Empty").finish().unwrap();
+        assert_eq!(buf, "Empty {}");
     }
 
     #[test]
-    fn test_parse_record_fields() {
-        let (fields, rest) = parse_record_fields("{bar = 42, baz = True}").unwrap();
-        assert_eq!(fields, vec![("bar", "42"), ("baz", "True")]);
+    fn app_builder_no_args() {
+        let mut buf = String::new();
+        app(&mut buf, "Nothing").finish().unwrap();
+        assert_eq!(buf, "Nothing");
+    }
+
+    #[test]
+    fn app_builder_single_arg() {
+        let mut buf = String::new();
+        app(&mut buf, "Just").arg(&42u32).finish().unwrap();
+        assert_eq!(buf, "(Just 42)");
+    }
+
+    #[test]
+    fn app_builder_mixed_types() {
+        let mut buf = String::new();
+        app(&mut buf, "Pair")
+            .arg(&1u32)
+            .arg(&true)
+            .finish()
+            .unwrap();
+        assert_eq!(buf, "(Pair 1 True)");
+    }
+
+    #[test]
+    fn parse_record_basic() {
+        let (rec, rest) = parse_record("Foo", "Foo {bar = 42, baz = True}").unwrap();
+        assert_eq!(rec.field::<u32>("bar").unwrap(), 42);
+        assert_eq!(rec.field::<bool>("baz").unwrap(), true);
         assert_eq!(rest, "");
     }
 
     #[test]
-    fn test_parse_record_fields_nested() {
-        let (fields, rest) = parse_record_fields("{x = (Just [1, 2]), y = \"hello\"}").unwrap();
-        assert_eq!(fields.len(), 2);
-        assert_eq!(fields[0], ("x", "(Just [1, 2])"));
-        assert_eq!(fields[1], ("y", "\"hello\""));
+    fn parse_record_nested() {
+        let (rec, rest) = parse_record("X", r#"X {a = (Just [1, 2]), b = "hello"}"#).unwrap();
+        assert_eq!(
+            rec.field::<Option<Vec<u32>>>("a").unwrap(),
+            Some(vec![1, 2])
+        );
+        assert_eq!(rec.field::<String>("b").unwrap(), "hello");
         assert_eq!(rest, "");
+    }
+
+    #[test]
+    fn parse_record_missing_field() {
+        let (rec, _) = parse_record("Foo", "Foo {bar = 42}").unwrap();
+        assert!(rec.field::<u32>("missing").is_err());
+    }
+
+    #[test]
+    fn parse_record_wrong_constructor() {
+        assert!(parse_record("Bar", "Foo {x = 1}").is_err());
+    }
+
+    #[test]
+    fn parse_app_no_args() {
+        let p = parse_app("Nothing", "Nothing").unwrap();
+        let rest = p.finish().unwrap();
+        assert_eq!(rest, "");
+    }
+
+    #[test]
+    fn parse_app_single_arg() {
+        let mut p = parse_app("Just", "(Just 42)").unwrap();
+        let val: u32 = p.arg().unwrap();
+        assert_eq!(val, 42);
+        let rest = p.finish().unwrap();
+        assert_eq!(rest, "");
+    }
+
+    #[test]
+    fn parse_app_mixed_types() {
+        let mut p = parse_app("Pair", "(Pair 1 True)").unwrap();
+        let x: u32 = p.arg().unwrap();
+        let b: bool = p.arg().unwrap();
+        assert_eq!((x, b), (1, true));
+        let rest = p.finish().unwrap();
+        assert_eq!(rest, "");
+    }
+
+    #[test]
+    fn parse_app_wrong_constructor() {
+        assert!(parse_app("Bar", "(Foo 1)").is_err());
+    }
+
+    #[test]
+    fn record_roundtrip() {
+        let mut buf = String::new();
+        record(&mut buf, "Point")
+            .field("x", &10i32)
+            .field("y", &(-3i32))
+            .field("name", &"test")
+            .finish()
+            .unwrap();
+
+        let (rec, rest) = parse_record("Point", &buf).unwrap();
+        assert_eq!(rec.field::<i32>("x").unwrap(), 10);
+        assert_eq!(rec.field::<i32>("y").unwrap(), -3);
+        assert_eq!(rec.field::<String>("name").unwrap(), "test");
+        assert_eq!(rest, "");
+    }
+
+    #[test]
+    fn app_roundtrip() {
+        let mut buf = String::new();
+        app(&mut buf, "Pair")
+            .arg(&42u32)
+            .arg(&"hello".to_string())
+            .finish()
+            .unwrap();
+
+        let mut p = parse_app("Pair", &buf).unwrap();
+        assert_eq!(p.arg::<u32>().unwrap(), 42);
+        assert_eq!(p.arg::<String>().unwrap(), "hello");
+        assert_eq!(p.finish().unwrap(), "");
     }
 }

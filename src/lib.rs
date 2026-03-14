@@ -29,6 +29,7 @@ use nonblock::NonBlockingReader;
 use std::io::{ErrorKind, LineWriter, Read, Write};
 use std::os::fd::{AsRawFd, BorrowedFd, RawFd};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
@@ -394,12 +395,7 @@ impl Ghci {
 
         let mut stdout = String::new();
         let mut stderr = String::new();
-        let timeout = self
-            .timeout
-            .and_then(|d| d.as_millis().try_into().ok())
-            .map_or(PollTimeout::NONE, |ms: i32| {
-                PollTimeout::try_from(ms).unwrap_or(PollTimeout::NONE)
-            });
+        let deadline = self.timeout.map(|d| Instant::now() + d);
 
         loop {
             let stderr_fd = unsafe { BorrowedFd::borrow_raw(self.stderr_fd) };
@@ -409,7 +405,23 @@ impl Ghci {
                 PollFd::new(stdout_fd, PollFlags::POLLIN),
             ];
 
-            let ret = poll(&mut poll_fds, timeout)?;
+            let poll_timeout = match deadline {
+                None => PollTimeout::NONE,
+                Some(dl) => {
+                    let remaining = dl.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        return Err(GhciError::Timeout);
+                    }
+                    remaining
+                        .as_millis()
+                        .try_into()
+                        .ok()
+                        .and_then(|ms: i32| PollTimeout::try_from(ms).ok())
+                        .unwrap_or(PollTimeout::NONE)
+                }
+            };
+
+            let ret = poll(&mut poll_fds, poll_timeout)?;
 
             if ret == 0 {
                 return Err(GhciError::Timeout);
@@ -687,6 +699,18 @@ mod tests {
         assert!(
             matches!(res, Err(GhciError::DisallowedInput(_))),
             "expected DisallowedInput, got {res:?}"
+        );
+    }
+
+    #[test]
+    fn timeout_on_infinite_output() {
+        let mut ghci = Ghci::new().unwrap();
+        ghci.set_timeout(Some(Duration::from_millis(200)));
+        // mapM_ keeps producing output forever — the total-duration timeout must fire
+        let res = ghci.eval("mapM_ print [1..]");
+        assert!(
+            matches!(res, Err(GhciError::Timeout)),
+            "expected Timeout, got {res:?}"
         );
     }
 }

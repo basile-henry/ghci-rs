@@ -1,6 +1,6 @@
 #![deny(missing_docs)]
 #![warn(clippy::all, clippy::pedantic, clippy::nursery, clippy::cargo)]
-#![doc(html_root_url = "https://docs.rs/ghci/0.1.0")]
+#![doc(html_root_url = "https://docs.rs/ghci/0.2.0")]
 
 //! A crate to manage and communicate with `ghci` sessions
 //!
@@ -9,22 +9,28 @@
 //! #
 //! # fn main() -> ghci::Result<()> {
 //! let mut ghci = Ghci::new()?;
-//! let out = ghci.eval("putStrLn \"Hello world\"")?;
-//! assert_eq!(&out.stdout, "Hello world\n");
+//! let out = ghci.eval("1 + 1")?;
+//! assert_eq!(out, "2\n");
 //! #
 //! #   Ok(())
 //! # }
 //! ```
 //!
-//! See [`Ghci`] documentation for more examples
+//! See [`Ghci`] documentation for more examples.
+//!
+//! # Platform support
+//!
+//! This crate uses Unix-specific APIs (`nix::poll`, file descriptors) and only supports
+//! Unix platforms (Linux, macOS, BSDs).
 
 use core::time::Duration;
-use nix::poll::{poll, PollFd, PollFlags};
+use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
 use nonblock::NonBlockingReader;
 use std::io::{ErrorKind, LineWriter, Read, Write};
-use std::os::fd::{AsRawFd, RawFd};
-use std::path::Path;
+use std::os::fd::{AsRawFd, BorrowedFd, RawFd};
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 /// A ghci session handle
 ///
@@ -71,6 +77,14 @@ pub enum GhciError {
     /// Poll error when waiting on ghci stdout/stderr
     #[error("Poll error: {0}")]
     PollError(#[from] nix::errno::Errno),
+    /// The evaluation produced output on stderr (Haskell error)
+    #[error("ghci eval error:\n{stderr}")]
+    EvalError {
+        /// stdout produced before/during the error
+        stdout: String,
+        /// stderr output (the error message)
+        stderr: String,
+    },
 }
 
 /// A convenient alias for [`std::result::Result`] using a [`GhciError`]
@@ -79,27 +93,107 @@ pub type Result<T> = std::result::Result<T, GhciError>;
 // Use a prompt that is unlikely to be part of the stdout of the ghci session
 const PROMPT: &str = "__ghci_rust_prompt__>\n";
 
-impl Ghci {
-    /// Create a new ghci session
+/// Builder for configuring and creating [`Ghci`] sessions
+///
+/// ```
+/// # use ghci::GhciBuilder;
+/// #
+/// # fn main() -> ghci::Result<()> {
+/// let mut ghci = GhciBuilder::new()
+///     .arg("-XOverloadedStrings")
+///     .build()?;
+/// let out = ghci.eval("1 + 1")?;
+/// assert_eq!(out, "2\n");
+/// #
+/// #   Ok(())
+/// # }
+/// ```
+pub struct GhciBuilder {
+    ghci_path: Option<String>,
+    args: Vec<String>,
+    working_dir: Option<PathBuf>,
+}
+
+impl Default for GhciBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl GhciBuilder {
+    /// Create a new builder with default settings
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            ghci_path: None,
+            args: Vec::new(),
+            working_dir: None,
+        }
+    }
+
+    /// Set the path to the ghci binary
     ///
-    /// It will use `ghci` on your `PATH` by default, but can be overridden to use any `ghci` by
-    /// setting the `GHCI_PATH` environment variable pointing at the binary to use
+    /// Overrides the `GHCI_PATH` environment variable. If neither is set, `"ghci"` is used.
+    #[must_use]
+    pub fn ghci_path(mut self, path: impl Into<String>) -> Self {
+        self.ghci_path = Some(path.into());
+        self
+    }
+
+    /// Add a single argument to pass to ghci
+    #[must_use]
+    pub fn arg(mut self, arg: impl Into<String>) -> Self {
+        self.args.push(arg.into());
+        self
+    }
+
+    /// Add multiple arguments to pass to ghci
+    #[must_use]
+    pub fn args(mut self, args: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.args.extend(args.into_iter().map(Into::into));
+        self
+    }
+
+    /// Set the working directory for the ghci process
+    #[must_use]
+    pub fn working_dir(mut self, path: impl Into<PathBuf>) -> Self {
+        self.working_dir = Some(path.into());
+        self
+    }
+
+    /// Build and start the ghci session
     ///
     /// # Errors
     ///
     /// Returns [`IOError`] when it encounters IO errors as part of spawning the `ghci` subprocess
     ///
+    /// # Panics
+    ///
+    /// Panics if the child process stdin, stdout, or stderr pipes are unexpectedly missing.
+    ///
     /// [`IOError`]: GhciError::IOError
-    pub fn new() -> Result<Self> {
+    pub fn build(self) -> Result<Ghci> {
         const PIPE_ERR: &str = "pipe should be present";
 
-        let ghci = std::env::var("GHCI_PATH").unwrap_or_else(|_| "ghci".to_string());
+        let ghci_path = self
+            .ghci_path
+            .or_else(|| std::env::var("GHCI_PATH").ok())
+            .unwrap_or_else(|| "ghci".to_string());
 
-        let mut child = Command::new(ghci)
-            .stdin(Stdio::piped())
+        let mut cmd = Command::new(ghci_path);
+        cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
+            .stderr(Stdio::piped());
+
+        if !self.args.is_empty() {
+            cmd.args(&self.args);
+        }
+
+        if let Some(dir) = self.working_dir {
+            cmd.current_dir(dir);
+        }
+
+        let mut child = cmd.spawn()?;
 
         let mut stdin = LineWriter::new(child.stdin.take().expect(PIPE_ERR));
         let mut stdout = child.stdout.take().expect(PIPE_ERR);
@@ -109,14 +203,14 @@ impl Ghci {
 
         // Setup a known prompt/multi-line prompt
         stdin.write_all(b":set prompt \"")?;
-        stdin.write_all(PROMPT[..PROMPT.len() - 1].as_bytes())?;
+        stdin.write_all(&PROMPT.as_bytes()[..PROMPT.len() - 1])?;
         stdin.write_all(b"\\n\"\n")?;
         clear_blocking_reader_until(&mut stdout, PROMPT.as_bytes())?;
 
         stdin.write_all(b":set prompt-cont \"\"\n")?;
         clear_blocking_reader_until(&mut stdout, PROMPT.as_bytes())?;
 
-        Ok(Self {
+        Ok(Ghci {
             stdin,
             stdout_fd: stdout.as_raw_fd(),
             stdout: NonBlockingReader::from_fd(stdout)?,
@@ -126,8 +220,32 @@ impl Ghci {
             timeout: None,
         })
     }
+}
+
+impl Ghci {
+    /// Create a new ghci session
+    ///
+    /// It will use `ghci` on your `PATH` by default, but can be overridden to use any `ghci` by
+    /// setting the `GHCI_PATH` environment variable pointing at the binary to use.
+    ///
+    /// For more configuration options, see [`GhciBuilder`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IOError`] when it encounters IO errors as part of spawning the `ghci` subprocess
+    ///
+    /// [`IOError`]: GhciError::IOError
+    pub fn new() -> Result<Self> {
+        GhciBuilder::new().build()
+    }
 
     /// Evaluate/run a statement
+    ///
+    /// Returns only the stdout output. If ghci produces any stderr output (indicating an error),
+    /// an [`EvalError`] is returned instead.
+    ///
+    /// For cases where stderr output is expected and should not be treated as an error,
+    /// use [`eval_raw`] instead.
     ///
     /// ```
     /// # use ghci::Ghci;
@@ -135,23 +253,67 @@ impl Ghci {
     /// # fn main() -> ghci::Result<()> {
     /// let mut ghci = Ghci::new()?;
     /// let out = ghci.eval("putStrLn \"Hello world\"")?;
-    /// assert_eq!(&out.stdout, "Hello world\n");
+    /// assert_eq!(out, "Hello world\n");
     /// #
     /// #   Ok(())
     /// # }
     /// ```
     ///
-    /// Multi-line inputs are also supported. The evaluation output may contain both stdout and
-    /// stderr:
+    /// Haskell errors are surfaced as Rust errors:
+    ///
+    /// ```
+    /// # use ghci::{Ghci, GhciError};
+    /// #
+    /// # fn main() -> ghci::Result<()> {
+    /// let mut ghci = Ghci::new()?;
+    /// let res = ghci.eval("x ::");
+    /// assert!(matches!(res, Err(GhciError::EvalError { .. })));
+    /// #
+    /// #   Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// - Returns an [`EvalError`] if ghci produces output on stderr.
+    /// - Returns a [`Timeout`] if the evaluation timeout (set by [`Ghci::set_timeout`])
+    ///   is reached before the evaluation completes.
+    /// - Returns a [`IOError`] when encounters an IO error on the `ghci` subprocess
+    ///   `stdin`, `stdout`, or `stderr`.
+    /// - Returns a [`PollError`] when waiting for output, if the `ghci` subprocess
+    ///   `stdout` or `stderr` is closed (upon a crash for example)
+    ///
+    /// [`EvalError`]: GhciError::EvalError
+    /// [`Timeout`]: GhciError::Timeout
+    /// [`IOError`]: GhciError::IOError
+    /// [`PollError`]: GhciError::PollError
+    /// [`eval_raw`]: Ghci::eval_raw
+    pub fn eval(&mut self, input: &str) -> Result<String> {
+        let out = self.eval_raw(input)?;
+
+        if out.stderr.is_empty() {
+            Ok(out.stdout)
+        } else {
+            Err(GhciError::EvalError {
+                stdout: out.stdout,
+                stderr: out.stderr,
+            })
+        }
+    }
+
+    /// Evaluate/run a statement, returning both stdout and stderr
+    ///
+    /// Unlike [`eval`], this method does not treat stderr output as an error. This is useful
+    /// when you expect output on stderr (e.g. GHC warnings, debug output via `hPutStrLn stderr`).
     ///
     /// ```
     /// # use ghci::Ghci;
     /// #
     /// # fn main() -> ghci::Result<()> {
     /// let mut ghci = Ghci::new()?;
-    /// ghci.import(&["System.IO"]); // imports not supported as part of multi-line inputs
+    /// ghci.import(&["System.IO"])?;
     ///
-    /// let out = ghci.eval(r#"
+    /// let out = ghci.eval_raw(r#"
     /// do
     ///   hPutStrLn stdout "Output on stdout"
     ///   hPutStrLn stderr "Output on stderr"
@@ -168,16 +330,17 @@ impl Ghci {
     /// # Errors
     ///
     /// - Returns a [`Timeout`] if the evaluation timeout (set by [`Ghci::set_timeout`])
-    /// is reached before the evaluation completes.
+    ///   is reached before the evaluation completes.
     /// - Returns a [`IOError`] when encounters an IO error on the `ghci` subprocess
-    /// `stdin`, `stdout`, or `stderr`.
+    ///   `stdin`, `stdout`, or `stderr`.
     /// - Returns a [`PollError`] when waiting for output, if the `ghci` subprocess
-    /// `stdout` or `stderr` is closed (upon a crash for example)
+    ///   `stdout` or `stderr` is closed (upon a crash for example)
     ///
+    /// [`eval`]: Ghci::eval
     /// [`Timeout`]: GhciError::Timeout
     /// [`IOError`]: GhciError::IOError
     /// [`PollError`]: GhciError::PollError
-    pub fn eval(&mut self, input: &str) -> Result<EvalOutput> {
+    pub fn eval_raw(&mut self, input: &str) -> Result<EvalOutput> {
         self.stdin.write_all(b":{\n")?;
         self.stdin.write_all(input.as_bytes())?;
         self.stdin.write_all(b"\n:}\n")?;
@@ -187,12 +350,16 @@ impl Ghci {
         let timeout = self
             .timeout
             .and_then(|d| d.as_millis().try_into().ok())
-            .unwrap_or(-1);
+            .map_or(PollTimeout::NONE, |ms: i32| {
+                PollTimeout::try_from(ms).unwrap_or(PollTimeout::NONE)
+            });
 
         loop {
+            let stderr_fd = unsafe { BorrowedFd::borrow_raw(self.stderr_fd) };
+            let stdout_fd = unsafe { BorrowedFd::borrow_raw(self.stdout_fd) };
             let mut poll_fds = [
-                PollFd::new(self.stderr_fd, PollFlags::POLLIN),
-                PollFd::new(self.stdout_fd, PollFlags::POLLIN),
+                PollFd::new(stderr_fd, PollFlags::POLLIN),
+                PollFd::new(stdout_fd, PollFlags::POLLIN),
             ];
 
             let ret = poll(&mut poll_fds, timeout)?;
@@ -249,7 +416,7 @@ impl Ghci {
     ///
     /// [`Timeout`]: GhciError::Timeout
     #[inline]
-    pub fn set_timeout(&mut self, timeout: Option<Duration>) {
+    pub const fn set_timeout(&mut self, timeout: Option<Duration>) {
         self.timeout = timeout;
     }
 
@@ -289,7 +456,8 @@ impl Ghci {
         let mut line = String::from(":load");
 
         for path in paths {
-            line.push_str(&format!(" {}", path.display()));
+            use std::fmt::Write as _;
+            let _ = write!(line, " {}", path.display());
         }
 
         self.eval(&line)?;
@@ -323,6 +491,63 @@ impl Drop for Ghci {
     }
 }
 
+/// A shared ghci session for use across threads (e.g. in tests)
+///
+/// Wraps a [`Ghci`] session in a `OnceLock<Mutex<...>>` so it can be stored in a `static`
+/// and lazily initialized on first use.
+///
+/// ```
+/// # use ghci::{Ghci, SharedGhci};
+/// #
+/// static GHCI: SharedGhci = SharedGhci::new(|| {
+///     let mut ghci = Ghci::new()?;
+///     ghci.import(&["Data.Char"])?;
+///     Ok(ghci)
+/// });
+///
+/// # fn main() {
+/// let mut ghci = GHCI.lock();
+/// let out = ghci.eval("ord 'A'").unwrap();
+/// assert_eq!(out, "65\n");
+/// # }
+/// ```
+pub struct SharedGhci {
+    inner: OnceLock<Mutex<Ghci>>,
+    init: fn() -> Result<Ghci>,
+}
+
+impl SharedGhci {
+    /// Create a new `SharedGhci` with the given initialization function
+    ///
+    /// The initialization function will be called at most once, on the first call to [`lock`].
+    ///
+    /// [`lock`]: SharedGhci::lock
+    #[must_use]
+    pub const fn new(init: fn() -> Result<Ghci>) -> Self {
+        Self {
+            inner: OnceLock::new(),
+            init,
+        }
+    }
+
+    /// Lock and return a guard to the shared ghci session
+    ///
+    /// Initializes the session on first call.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the initialization function returns an error or the mutex is poisoned.
+    pub fn lock(&self) -> MutexGuard<'_, Ghci> {
+        self.inner
+            .get_or_init(|| {
+                let ghci = (self.init)().expect("SharedGhci initialization failed");
+                Mutex::new(ghci)
+            })
+            .lock()
+            .expect("SharedGhci mutex poisoned")
+    }
+}
+
 // Helper function to clear data from a blocking reader until a pattern is seen
 // - the pattern is also cleared
 // - the pattern has to be at the end of a given read (otherwise it will hang)
@@ -352,7 +577,19 @@ mod tests {
     #[test]
     fn parse_error() {
         let mut ghci = Ghci::new().unwrap();
-        let res = ghci.eval("x ::").unwrap();
+        let res = ghci.eval("x ::");
+        match res {
+            Err(GhciError::EvalError { stderr, .. }) => {
+                assert!(stderr.contains("parse error"));
+            }
+            other => panic!("expected EvalError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_error_raw() {
+        let mut ghci = Ghci::new().unwrap();
+        let res = ghci.eval_raw("x ::").unwrap();
         assert!(res.stderr.contains("parse error"));
     }
 }

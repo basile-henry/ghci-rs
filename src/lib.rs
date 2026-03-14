@@ -29,9 +29,9 @@ use nonblock::NonBlockingReader;
 use std::io::{ErrorKind, LineWriter, Read, Write};
 use std::os::fd::{AsRawFd, BorrowedFd, RawFd};
 use std::path::{Path, PathBuf};
-use std::time::Instant;
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::time::Instant;
 
 pub mod haskell;
 pub use haskell::{FromHaskell, HaskellParseError, ToHaskell};

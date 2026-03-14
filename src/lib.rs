@@ -191,6 +191,10 @@ impl GhciBuilder {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
+        // Always ignore the user's ~/.ghci to ensure the default prompt "> " is present.
+        // Users who need custom .ghci logic can pass their own script via
+        // `.arg("-ghci-script=/path/to/script")`.
+        cmd.arg("-ignore-dot-ghci");
         if !self.args.is_empty() {
             cmd.args(&self.args);
         }

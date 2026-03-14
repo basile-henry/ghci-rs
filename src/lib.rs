@@ -91,6 +91,9 @@ pub enum GhciError {
     /// Error parsing Haskell expressions
     #[error("Haskell parse error: {0}")]
     HaskellParse(#[from] haskell::HaskellParseError),
+    /// Input attempted to change the ghci prompt, which would break the session
+    #[error("disallowed input: {0}")]
+    DisallowedInput(&'static str),
 }
 
 /// A convenient alias for [`std::result::Result`] using a [`GhciError`]
@@ -379,6 +382,12 @@ impl Ghci {
     /// [`IOError`]: GhciError::IOError
     /// [`PollError`]: GhciError::PollError
     pub fn eval_raw(&mut self, input: &str) -> Result<EvalOutput> {
+        if input.trim_start().starts_with(":set prompt") {
+            return Err(GhciError::DisallowedInput(
+                ":set prompt and :set prompt-cont are managed by ghci-rs and cannot be changed",
+            ));
+        }
+
         self.stdin.write_all(b":{\n")?;
         self.stdin.write_all(input.as_bytes())?;
         self.stdin.write_all(b"\n:}\n")?;
@@ -669,5 +678,15 @@ mod tests {
         let vec: Vec<i32> = ghci.eval_as("[1, 2, 3]")?;
         assert_eq!(vec, vec![1, 2, 3]);
         Ok(())
+    }
+
+    #[test]
+    fn disallow_set_prompt() {
+        let mut ghci = Ghci::new().unwrap();
+        let res = ghci.eval(":set prompt \"foo> \"");
+        assert!(
+            matches!(res, Err(GhciError::DisallowedInput(_))),
+            "expected DisallowedInput, got {res:?}"
+        );
     }
 }

@@ -547,8 +547,8 @@ impl Ghci {
 
 impl Drop for Ghci {
     fn drop(&mut self) {
-        if self.child.try_wait().unwrap().is_none() {
-            self.child.kill().unwrap();
+        if let Ok(None) = self.child.try_wait() {
+            let _ = self.child.kill();
         }
     }
 }

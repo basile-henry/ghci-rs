@@ -1176,8 +1176,14 @@ mod tests {
         assert!((f64::from_haskell("3.0").unwrap() - 3.0).abs() < f64::EPSILON);
         assert!((f64::from_haskell("(-3.0)").unwrap() + 3.0).abs() < f64::EPSILON);
         assert!(f64::from_haskell("(0/0)").unwrap().is_nan());
-        assert!(f64::from_haskell("(1/0)").unwrap().is_infinite() && f64::from_haskell("(1/0)").unwrap().is_sign_positive());
-        assert!(f64::from_haskell("((-1)/0)").unwrap().is_infinite() && f64::from_haskell("((-1)/0)").unwrap().is_sign_negative());
+        assert!(
+            f64::from_haskell("(1/0)").unwrap().is_infinite()
+                && f64::from_haskell("(1/0)").unwrap().is_sign_positive()
+        );
+        assert!(
+            f64::from_haskell("((-1)/0)").unwrap().is_infinite()
+                && f64::from_haskell("((-1)/0)").unwrap().is_sign_negative()
+        );
     }
 
     #[test]

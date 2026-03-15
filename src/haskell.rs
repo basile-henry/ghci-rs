@@ -138,6 +138,18 @@ macro_rules! impl_to_haskell_signed {
 
 impl_to_haskell_signed!(i8, i16, i32, i64, i128, isize);
 
+/// Write a float value ensuring a decimal point is always present.
+fn write_float(buf: &mut impl fmt::Write, value: impl fmt::Display) -> fmt::Result {
+    use std::fmt::Write as _;
+    let mut tmp = String::new();
+    write!(tmp, "{value}")?;
+    // Ensure a decimal point so Haskell interprets it as a fractional number
+    if !tmp.contains('.') {
+        tmp.push_str(".0");
+    }
+    buf.write_str(&tmp)
+}
+
 macro_rules! impl_to_haskell_float {
     ($($t:ty),*) => {
         $(impl ToHaskell for $t {
@@ -151,9 +163,11 @@ macro_rules! impl_to_haskell_float {
                         buf.write_str("((-1)/0)")
                     }
                 } else if *self < 0.0 {
-                    write!(buf, "({self:.1})")
+                    buf.write_char('(')?;
+                    write_float(buf, self)?;
+                    buf.write_char(')')
                 } else {
-                    write!(buf, "{self:.1}")
+                    write_float(buf, self)
                 }
             }
         })*
@@ -1102,6 +1116,10 @@ mod tests {
         assert_eq!(f64::NAN.to_haskell(), "(0/0)");
         assert_eq!(f64::INFINITY.to_haskell(), "(1/0)");
         assert_eq!(f64::NEG_INFINITY.to_haskell(), "((-1)/0)");
+        // Precision is preserved
+        assert_eq!(3.14159265358979f64.to_haskell(), "3.14159265358979");
+        assert_eq!((-0.001f64).to_haskell(), "(-0.001)");
+        assert_eq!(1.0f32.to_haskell(), "1.0");
     }
 
     #[test]

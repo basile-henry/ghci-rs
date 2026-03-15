@@ -1147,15 +1147,15 @@ mod tests {
     #[test]
     fn ref_to_haskell() {
         let x = 42u32;
-        assert_eq!((&x).to_haskell(), "42");
+        assert_eq!(x.to_haskell(), "42");
     }
 
     // ── FromHaskell tests ────────────────────────────────────────────
 
     #[test]
     fn bool_from_haskell() {
-        assert_eq!(bool::from_haskell("True").unwrap(), true);
-        assert_eq!(bool::from_haskell("False").unwrap(), false);
+        assert!(bool::from_haskell("True").unwrap());
+        assert!(!bool::from_haskell("False").unwrap());
     }
 
     #[test]
@@ -1176,8 +1176,14 @@ mod tests {
         assert!((f64::from_haskell("3.0").unwrap() - 3.0).abs() < f64::EPSILON);
         assert!((f64::from_haskell("(-3.0)").unwrap() + 3.0).abs() < f64::EPSILON);
         assert!(f64::from_haskell("(0/0)").unwrap().is_nan());
-        assert_eq!(f64::from_haskell("(1/0)").unwrap(), f64::INFINITY);
-        assert_eq!(f64::from_haskell("((-1)/0)").unwrap(), f64::NEG_INFINITY);
+        assert!(
+            f64::from_haskell("(1/0)").unwrap().is_infinite()
+                && f64::from_haskell("(1/0)").unwrap().is_sign_positive()
+        );
+        assert!(
+            f64::from_haskell("((-1)/0)").unwrap().is_infinite()
+                && f64::from_haskell("((-1)/0)").unwrap().is_sign_negative()
+        );
     }
 
     #[test]
@@ -1330,7 +1336,7 @@ mod tests {
     fn parse_record_basic() {
         let (rec, rest) = parse_record("Foo", "Foo {bar = 42, baz = True}").unwrap();
         assert_eq!(rec.field::<u32>("bar").unwrap(), 42);
-        assert_eq!(rec.field::<bool>("baz").unwrap(), true);
+        assert!(rec.field::<bool>("baz").unwrap());
         assert_eq!(rest, "");
     }
 

@@ -70,13 +70,13 @@ struct Meters(f64);
 
 #[test]
 fn transparent_to_haskell() {
-    assert_eq!(Meters(3.14).to_haskell(), 3.14f64.to_haskell());
+    assert_eq!(Meters(1.23).to_haskell(), 1.23f64.to_haskell());
 }
 
 #[test]
 fn transparent_from_haskell() {
-    let m = Meters::from_haskell("3.14").unwrap();
-    assert_eq!(m, Meters(3.14));
+    let m = Meters::from_haskell("1.23").unwrap();
+    assert_eq!(m, Meters(1.23));
 }
 
 // ── Custom Haskell names ─────────────────────────────────────────────

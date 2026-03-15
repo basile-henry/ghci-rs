@@ -613,18 +613,24 @@ impl SharedGhci {
 // Helper function to clear data from a blocking reader until a pattern is seen
 // - the pattern is also cleared
 // - the pattern has to be at the end of a given read (otherwise it will hang)
-// - limited to 1024 bytes
 fn clear_blocking_reader_until(mut r: impl Read, expected_end: &[u8]) -> std::io::Result<()> {
-    let mut buffer = [0; 1024];
-    let mut end = 0;
+    let pat_len = expected_end.len();
+    assert!(pat_len < 1024, "pattern must be shorter than the read buffer");
+    let mut buffer = [0u8; 1024];
+    let mut start = 0; // how many bytes at the front are carried over from the previous read
     loop {
-        match r.read(&mut buffer[end..]) {
+        match r.read(&mut buffer[start..]) {
             Ok(0) => return Ok(()),
             Ok(bytes) => {
-                end += bytes;
+                let end = start + bytes;
                 if buffer[..end].ends_with(expected_end) {
                     return Ok(());
                 }
+                // Carry over the last pat_len bytes (or fewer if we don't have enough yet)
+                // to the front so the next read appends after them.
+                let keep = pat_len.min(end);
+                buffer.copy_within(end - keep..end, 0);
+                start = keep;
             }
             Err(err) if err.kind() == ErrorKind::Interrupted => {}
             Err(err) => return Err(err),

@@ -667,7 +667,7 @@ mod tests {
     fn eval_as_boolean() -> Result<()> {
         let mut ghci = Ghci::new()?;
         let b: bool = ghci.eval_as("True")?;
-        assert_eq!(b, true);
+        assert!(b);
         Ok(())
     }
 

@@ -649,6 +649,23 @@ fn parse_constructor(input: &str) -> Result<(&str, &str), HaskellParseError> {
     Ok((&input[..end], &input[end..]))
 }
 
+fn parse_identifier(input: &str) -> Result<(&str, &str), HaskellParseError> {
+    let input = skip_ws(input);
+    let first = input
+        .chars()
+        .next()
+        .ok_or(HaskellParseError::UnexpectedEnd)?;
+    if !first.is_ascii_alphabetic() && first != '_' {
+        return Err(HaskellParseError::ParseError {
+            message: format!("expected identifier, got {input:?}"),
+        });
+    }
+    let end = input
+        .find(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '\'')
+        .unwrap_or(input.len());
+    Ok((&input[..end], &input[end..]))
+}
+
 #[allow(clippy::type_complexity)]
 fn parse_record_fields(input: &str) -> Result<(Vec<(&str, &str)>, &str), HaskellParseError> {
     let input = skip_ws(input);
@@ -994,7 +1011,7 @@ pub fn parse_app<'a>(
     // Try parenthesized: (Constructor ...)
     if let Some(inner) = input.strip_prefix('(') {
         let inner = skip_ws(inner);
-        let (name, rest) = parse_constructor(inner)?;
+        let (name, rest) = parse_identifier(inner)?;
         if name != constructor {
             return Err(HaskellParseError::ParseError {
                 message: format!("expected constructor {constructor:?}, got {name:?}"),
@@ -1006,7 +1023,7 @@ pub fn parse_app<'a>(
         });
     }
     // Bare constructor
-    let (name, rest) = parse_constructor(input)?;
+    let (name, rest) = parse_identifier(input)?;
     if name != constructor {
         return Err(HaskellParseError::ParseError {
             message: format!("expected constructor {constructor:?}, got {name:?}"),

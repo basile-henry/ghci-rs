@@ -36,6 +36,9 @@ use std::time::Instant;
 pub mod haskell;
 pub use haskell::{FromHaskell, HaskellParseError, ToHaskell};
 
+#[cfg(feature = "derive")]
+pub use ghci_derive::{FromHaskell, ToHaskell};
+
 /// A ghci session handle
 ///
 /// The session is stateful, so the order of interaction matters

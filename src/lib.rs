@@ -603,13 +603,31 @@ impl SharedGhci {
     ///
     /// Panics if the initialization function returns an error or the mutex is poisoned.
     pub fn lock(&self) -> MutexGuard<'_, Ghci> {
-        self.inner
-            .get_or_init(|| {
-                let ghci = (self.init)().expect("SharedGhci initialization failed");
-                Mutex::new(ghci)
-            })
+        self.try_lock()
+            .expect("SharedGhci initialization or lock failed")
+    }
+
+    /// Try to lock and return a guard to the shared ghci session
+    ///
+    /// Initializes the session on first call.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the initialization function returns an error.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`IOError`] if the mutex is poisoned.
+    ///
+    /// [`IOError`]: GhciError::IOError
+    pub fn try_lock(&self) -> Result<MutexGuard<'_, Ghci>> {
+        let mutex = self.inner.get_or_init(|| {
+            let ghci = (self.init)().expect("SharedGhci initialization failed");
+            Mutex::new(ghci)
+        });
+        mutex
             .lock()
-            .expect("SharedGhci mutex poisoned")
+            .map_err(|e| GhciError::IOError(std::io::Error::other(e.to_string())))
     }
 }
 

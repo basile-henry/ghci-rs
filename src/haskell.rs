@@ -484,6 +484,44 @@ impl FromHaskell for char {
     }
 }
 
+/// Named ASCII escape sequences produced by Haskell's `show`.
+const NAMED_ESCAPES: &[(&str, char)] = &[
+    ("NUL", '\x00'),
+    ("SOH", '\x01'),
+    ("STX", '\x02'),
+    ("ETX", '\x03'),
+    ("EOT", '\x04'),
+    ("ENQ", '\x05'),
+    ("ACK", '\x06'),
+    ("BEL", '\x07'),
+    ("BS", '\x08'),
+    ("HT", '\x09'),
+    ("LF", '\x0A'),
+    ("VT", '\x0B'),
+    ("FF", '\x0C'),
+    ("CR", '\x0D'),
+    ("SO", '\x0E'),
+    ("SI", '\x0F'),
+    ("DLE", '\x10'),
+    ("DC1", '\x11'),
+    ("DC2", '\x12'),
+    ("DC3", '\x13'),
+    ("DC4", '\x14'),
+    ("NAK", '\x15'),
+    ("SYN", '\x16'),
+    ("ETB", '\x17'),
+    ("CAN", '\x18'),
+    ("EM", '\x19'),
+    ("SUB", '\x1A'),
+    ("ESC", '\x1B'),
+    ("FS", '\x1C'),
+    ("GS", '\x1D'),
+    ("RS", '\x1E'),
+    ("US", '\x1F'),
+    ("SP", '\x20'),
+    ("DEL", '\x7F'),
+];
+
 fn parse_escape(input: &str) -> Result<(char, &str), HaskellParseError> {
     let c = input
         .chars()
@@ -496,6 +534,10 @@ fn parse_escape(input: &str) -> Result<(char, &str), HaskellParseError> {
         'n' => Ok(('\n', &input[1..])),
         't' => Ok(('\t', &input[1..])),
         'r' => Ok(('\r', &input[1..])),
+        'a' => Ok(('\x07', &input[1..])),
+        'b' => Ok(('\x08', &input[1..])),
+        'f' => Ok(('\x0C', &input[1..])),
+        'v' => Ok(('\x0B', &input[1..])),
         '0' => Ok(('\0', &input[1..])),
         c if c.is_ascii_digit() => {
             // Numeric escape: \NNN
@@ -511,6 +553,17 @@ fn parse_escape(input: &str) -> Result<(char, &str), HaskellParseError> {
                 message: format!("invalid unicode code point: {num}"),
             })?;
             Ok((c, &input[end..]))
+        }
+        c if c.is_ascii_uppercase() => {
+            // Named ASCII escapes: \NUL, \SOH, \DEL, etc.
+            for &(name, ch) in NAMED_ESCAPES {
+                if input.starts_with(name) {
+                    return Ok((ch, &input[name.len()..]));
+                }
+            }
+            Err(HaskellParseError::ParseError {
+                message: format!("unknown escape sequence: \\{c}"),
+            })
         }
         _ => Err(HaskellParseError::ParseError {
             message: format!("unknown escape sequence: \\{c}"),

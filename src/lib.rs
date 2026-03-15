@@ -1,6 +1,6 @@
 #![deny(missing_docs)]
 #![warn(clippy::all, clippy::pedantic, clippy::nursery, clippy::cargo)]
-#![doc(html_root_url = "https://docs.rs/ghci/0.2.0")]
+#![doc(html_root_url = "https://docs.rs/ghci/0.2.1")]
 
 //! A crate to manage and communicate with `ghci` sessions
 //!

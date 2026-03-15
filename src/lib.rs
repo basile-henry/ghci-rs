@@ -96,6 +96,9 @@ pub enum GhciError {
     #[error("Haskell parse error: {0}")]
     HaskellParse(#[from] haskell::HaskellParseError),
     /// Input attempted to change the ghci prompt, which would break the session
+    ///
+    /// Note: this is a best-effort check for direct `:set prompt` commands. Indirect
+    /// changes (e.g. via `:cmd`) are not detected and will break the session.
     #[error("disallowed input: {0}")]
     DisallowedInput(&'static str),
 }

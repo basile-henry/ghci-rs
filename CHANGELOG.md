@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.1] - 2026/03/15
+
+### Added
+
+- `ghci-derive` crate with derive macros for `ToHaskell` and `FromHaskell` traits (enable via the `derive` feature).
+
 ## [0.2.0] - 2026/03/14
 
 ### Breaking changes

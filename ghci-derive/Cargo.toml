@@ -1,0 +1,16 @@
+[package]
+name = "ghci-derive"
+version = "0.2.0"
+repository = "https://github.com/basile-henry/ghci-rs"
+authors = ["Basile Henry <bjm.henry@gmail.com>"]
+license = "MIT"
+edition = "2021"
+description = "Derive macros for ghci ToHaskell/FromHaskell traits"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"

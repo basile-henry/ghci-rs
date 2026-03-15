@@ -550,7 +550,7 @@ impl Ghci {
 
 impl Drop for Ghci {
     fn drop(&mut self) {
-        if let Ok(None) = self.child.try_wait() {
+        if matches!(self.child.try_wait(), Ok(None)) {
             let _ = self.child.kill();
         }
     }
@@ -636,7 +636,10 @@ impl SharedGhci {
 // - the pattern has to be at the end of a given read (otherwise it will hang)
 fn clear_blocking_reader_until(mut r: impl Read, expected_end: &[u8]) -> std::io::Result<()> {
     let pat_len = expected_end.len();
-    assert!(pat_len < 1024, "pattern must be shorter than the read buffer");
+    assert!(
+        pat_len < 1024,
+        "pattern must be shorter than the read buffer"
+    );
     let mut buffer = [0u8; 1024];
     let mut start = 0; // how many bytes at the front are carried over from the previous read
     loop {

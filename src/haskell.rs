@@ -557,8 +557,8 @@ fn parse_escape(input: &str) -> Result<(char, &str), HaskellParseError> {
         c if c.is_ascii_uppercase() => {
             // Named ASCII escapes: \NUL, \SOH, \DEL, etc.
             for &(name, ch) in NAMED_ESCAPES {
-                if input.starts_with(name) {
-                    return Ok((ch, &input[name.len()..]));
+                if let Some(rest) = input.strip_prefix(name) {
+                    return Ok((ch, rest));
                 }
             }
             Err(HaskellParseError::ParseError {
@@ -1170,7 +1170,7 @@ mod tests {
         assert_eq!(f64::INFINITY.to_haskell(), "(1/0)");
         assert_eq!(f64::NEG_INFINITY.to_haskell(), "((-1)/0)");
         // Precision is preserved
-        assert_eq!(3.14159265358979f64.to_haskell(), "3.14159265358979");
+        assert_eq!(1.234_567_890_123_456_f64.to_haskell(), "1.234567890123456");
         assert_eq!((-0.001f64).to_haskell(), "(-0.001)");
         assert_eq!(1.0f32.to_haskell(), "1.0");
     }

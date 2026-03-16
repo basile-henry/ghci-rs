@@ -746,4 +746,24 @@ mod tests {
             "expected Timeout, got {res:?}"
         );
     }
+
+    #[test]
+    fn escape_sequences_via_ghci() -> Result<()> {
+        let mut ghci = Ghci::new()?;
+
+        // Ask ghci to show each control character, then parse the result back.
+        // This ensures our parser agrees with ghci's show output.
+        for code_point in (0u32..=31).chain(std::iter::once(127)) {
+            let expr = format!("toEnum {code_point} :: Char");
+            let parsed: char = ghci.eval_as(&expr).unwrap_or_else(|e| {
+                panic!("failed to parse ghci output for code point {code_point}: {e}")
+            });
+            assert_eq!(
+                parsed as u32, code_point,
+                "code point {code_point}: roundtrip mismatch"
+            );
+        }
+
+        Ok(())
+    }
 }

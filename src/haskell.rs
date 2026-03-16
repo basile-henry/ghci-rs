@@ -1276,6 +1276,59 @@ mod tests {
     }
 
     #[test]
+    fn single_char_escapes_from_haskell() {
+        assert_eq!(char::from_haskell("'\\a'").unwrap(), '\x07');
+        assert_eq!(char::from_haskell("'\\b'").unwrap(), '\x08');
+        assert_eq!(char::from_haskell("'\\f'").unwrap(), '\x0C');
+        assert_eq!(char::from_haskell("'\\v'").unwrap(), '\x0B');
+    }
+
+    #[test]
+    fn named_escapes_from_haskell() {
+        assert_eq!(String::from_haskell(r#""\NUL""#).unwrap(), "\x00");
+        assert_eq!(String::from_haskell(r#""\SOH""#).unwrap(), "\x01");
+        assert_eq!(String::from_haskell(r#""\STX""#).unwrap(), "\x02");
+        assert_eq!(String::from_haskell(r#""\ETX""#).unwrap(), "\x03");
+        assert_eq!(String::from_haskell(r#""\EOT""#).unwrap(), "\x04");
+        assert_eq!(String::from_haskell(r#""\ENQ""#).unwrap(), "\x05");
+        assert_eq!(String::from_haskell(r#""\ACK""#).unwrap(), "\x06");
+        assert_eq!(String::from_haskell(r#""\BEL""#).unwrap(), "\x07");
+        assert_eq!(String::from_haskell(r#""\BS""#).unwrap(), "\x08");
+        assert_eq!(String::from_haskell(r#""\HT""#).unwrap(), "\x09");
+        assert_eq!(String::from_haskell(r#""\LF""#).unwrap(), "\x0A");
+        assert_eq!(String::from_haskell(r#""\VT""#).unwrap(), "\x0B");
+        assert_eq!(String::from_haskell(r#""\FF""#).unwrap(), "\x0C");
+        assert_eq!(String::from_haskell(r#""\CR""#).unwrap(), "\x0D");
+        assert_eq!(String::from_haskell(r#""\SO""#).unwrap(), "\x0E");
+        assert_eq!(String::from_haskell(r#""\SI""#).unwrap(), "\x0F");
+        assert_eq!(String::from_haskell(r#""\DLE""#).unwrap(), "\x10");
+        assert_eq!(String::from_haskell(r#""\DC1""#).unwrap(), "\x11");
+        assert_eq!(String::from_haskell(r#""\DC2""#).unwrap(), "\x12");
+        assert_eq!(String::from_haskell(r#""\DC3""#).unwrap(), "\x13");
+        assert_eq!(String::from_haskell(r#""\DC4""#).unwrap(), "\x14");
+        assert_eq!(String::from_haskell(r#""\NAK""#).unwrap(), "\x15");
+        assert_eq!(String::from_haskell(r#""\SYN""#).unwrap(), "\x16");
+        assert_eq!(String::from_haskell(r#""\ETB""#).unwrap(), "\x17");
+        assert_eq!(String::from_haskell(r#""\CAN""#).unwrap(), "\x18");
+        assert_eq!(String::from_haskell(r#""\EM""#).unwrap(), "\x19");
+        assert_eq!(String::from_haskell(r#""\SUB""#).unwrap(), "\x1A");
+        assert_eq!(String::from_haskell(r#""\ESC""#).unwrap(), "\x1B");
+        assert_eq!(String::from_haskell(r#""\FS""#).unwrap(), "\x1C");
+        assert_eq!(String::from_haskell(r#""\GS""#).unwrap(), "\x1D");
+        assert_eq!(String::from_haskell(r#""\RS""#).unwrap(), "\x1E");
+        assert_eq!(String::from_haskell(r#""\US""#).unwrap(), "\x1F");
+        assert_eq!(String::from_haskell(r#""\SP""#).unwrap(), "\x20");
+        assert_eq!(String::from_haskell(r#""\DEL""#).unwrap(), "\x7F");
+    }
+
+    #[test]
+    fn so_soh_prefix_conflict() {
+        // SOH must match before SO to avoid prefix conflict
+        assert_eq!(String::from_haskell(r#""\SOH""#).unwrap(), "\x01");
+        assert_eq!(String::from_haskell(r#""\SO""#).unwrap(), "\x0E");
+    }
+
+    #[test]
     fn option_from_haskell() {
         assert_eq!(<Option<i32>>::from_haskell("Nothing").unwrap(), None);
         assert_eq!(<Option<u32>>::from_haskell("(Just 42)").unwrap(), Some(42));

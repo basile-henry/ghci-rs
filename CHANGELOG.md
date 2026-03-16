@@ -2,9 +2,17 @@
 
 ## [0.2.1] - 2026/03/15
 
+### Fixed
+
+- Float `ToHaskell` no longer truncates to 1 decimal place — full precision is preserved.
+- `Drop` impl no longer panics if the child process is in an unexpected state.
+- `clear_blocking_reader_until` no longer panics when ghci startup output exceeds 1024 bytes.
+- `FromHaskell` now handles all Haskell escape sequences (`\a`, `\b`, `\f`, `\v`, named escapes like `\NUL`, `\SOH`, `\DEL`, and the `\&` empty escape for disambiguation).
+
 ### Added
 
 - `ghci-derive` crate with derive macros for `ToHaskell` and `FromHaskell` traits (enable via the `derive` feature).
+- `SharedGhci::try_lock()` — fallible alternative to `lock()` that returns `Result` instead of panicking on mutex poisoning.
 
 ## [0.2.0] - 2026/03/14
 

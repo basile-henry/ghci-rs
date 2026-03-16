@@ -96,6 +96,9 @@ pub enum GhciError {
     #[error("Haskell parse error: {0}")]
     HaskellParse(#[from] haskell::HaskellParseError),
     /// Input attempted to change the ghci prompt, which would break the session
+    ///
+    /// Note: this is a best-effort check for direct `:set prompt` commands. Indirect
+    /// changes (e.g. via `:cmd`) are not detected and will break the session.
     #[error("disallowed input: {0}")]
     DisallowedInput(&'static str),
 }
@@ -547,8 +550,8 @@ impl Ghci {
 
 impl Drop for Ghci {
     fn drop(&mut self) {
-        if self.child.try_wait().unwrap().is_none() {
-            self.child.kill().unwrap();
+        if matches!(self.child.try_wait(), Ok(None)) {
+            let _ = self.child.kill();
         }
     }
 }
@@ -600,31 +603,58 @@ impl SharedGhci {
     ///
     /// Panics if the initialization function returns an error or the mutex is poisoned.
     pub fn lock(&self) -> MutexGuard<'_, Ghci> {
-        self.inner
-            .get_or_init(|| {
-                let ghci = (self.init)().expect("SharedGhci initialization failed");
-                Mutex::new(ghci)
-            })
+        self.try_lock()
+            .expect("SharedGhci initialization or lock failed")
+    }
+
+    /// Try to lock and return a guard to the shared ghci session
+    ///
+    /// Initializes the session on first call.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the initialization function returns an error.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`IOError`] if the mutex is poisoned.
+    ///
+    /// [`IOError`]: GhciError::IOError
+    pub fn try_lock(&self) -> Result<MutexGuard<'_, Ghci>> {
+        let mutex = self.inner.get_or_init(|| {
+            let ghci = (self.init)().expect("SharedGhci initialization failed");
+            Mutex::new(ghci)
+        });
+        mutex
             .lock()
-            .expect("SharedGhci mutex poisoned")
+            .map_err(|e| GhciError::IOError(std::io::Error::other(e.to_string())))
     }
 }
 
 // Helper function to clear data from a blocking reader until a pattern is seen
 // - the pattern is also cleared
 // - the pattern has to be at the end of a given read (otherwise it will hang)
-// - limited to 1024 bytes
 fn clear_blocking_reader_until(mut r: impl Read, expected_end: &[u8]) -> std::io::Result<()> {
-    let mut buffer = [0; 1024];
-    let mut end = 0;
+    let pat_len = expected_end.len();
+    assert!(
+        pat_len < 1024,
+        "pattern must be shorter than the read buffer"
+    );
+    let mut buffer = [0u8; 1024];
+    let mut start = 0; // how many bytes at the front are carried over from the previous read
     loop {
-        match r.read(&mut buffer[end..]) {
+        match r.read(&mut buffer[start..]) {
             Ok(0) => return Ok(()),
             Ok(bytes) => {
-                end += bytes;
+                let end = start + bytes;
                 if buffer[..end].ends_with(expected_end) {
                     return Ok(());
                 }
+                // Carry over the last pat_len bytes (or fewer if we don't have enough yet)
+                // to the front so the next read appends after them.
+                let keep = pat_len.min(end);
+                buffer.copy_within(end - keep..end, 0);
+                start = keep;
             }
             Err(err) if err.kind() == ErrorKind::Interrupted => {}
             Err(err) => return Err(err),

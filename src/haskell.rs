@@ -138,6 +138,18 @@ macro_rules! impl_to_haskell_signed {
 
 impl_to_haskell_signed!(i8, i16, i32, i64, i128, isize);
 
+/// Write a float value ensuring a decimal point is always present.
+fn write_float(buf: &mut impl fmt::Write, value: impl fmt::Display) -> fmt::Result {
+    use std::fmt::Write as _;
+    let mut tmp = String::new();
+    write!(tmp, "{value}")?;
+    // Ensure a decimal point so Haskell interprets it as a fractional number
+    if !tmp.contains('.') {
+        tmp.push_str(".0");
+    }
+    buf.write_str(&tmp)
+}
+
 macro_rules! impl_to_haskell_float {
     ($($t:ty),*) => {
         $(impl ToHaskell for $t {
@@ -151,9 +163,11 @@ macro_rules! impl_to_haskell_float {
                         buf.write_str("((-1)/0)")
                     }
                 } else if *self < 0.0 {
-                    write!(buf, "({self:.1})")
+                    buf.write_char('(')?;
+                    write_float(buf, self)?;
+                    buf.write_char(')')
                 } else {
-                    write!(buf, "{self:.1}")
+                    write_float(buf, self)
                 }
             }
         })*
@@ -165,7 +179,17 @@ impl_to_haskell_float!(f32, f64);
 impl ToHaskell for str {
     fn write_haskell(&self, buf: &mut impl fmt::Write) -> fmt::Result {
         buf.write_char('"')?;
+        let mut prev_was_numeric_escape = false;
         for c in self.chars() {
+            // After a numeric escape like \0 or \31, a following digit would
+            // be consumed as part of the escape. Insert \& to disambiguate.
+            if prev_was_numeric_escape && c.is_ascii_digit() {
+                buf.write_str("\\&")?;
+            }
+            // \0 and other control chars (except \n, \t, \r which use named
+            // escapes) produce numeric escapes
+            prev_was_numeric_escape =
+                c == '\0' || (c.is_ascii_control() && !matches!(c, '\n' | '\t' | '\r'));
             write_haskell_char_escaped(buf, c, '"')?;
         }
         buf.write_char('"')
@@ -431,9 +455,15 @@ impl FromHaskell for String {
             match c {
                 '"' => return Ok((result, &rest[1..])),
                 '\\' => {
-                    let (escaped, after) = parse_escape(&rest[1..])?;
-                    result.push(escaped);
-                    rest = after;
+                    if rest[1..].starts_with('&') {
+                        // \& is Haskell's empty escape, used to disambiguate
+                        // named escapes (e.g. "\SO\&H" is SO followed by 'H')
+                        rest = &rest[2..];
+                    } else {
+                        let (escaped, after) = parse_escape(&rest[1..])?;
+                        result.push(escaped);
+                        rest = after;
+                    }
                 }
                 _ => {
                     result.push(c);
@@ -470,6 +500,44 @@ impl FromHaskell for char {
     }
 }
 
+/// Named ASCII escape sequences produced by Haskell's `show`.
+const NAMED_ESCAPES: &[(&str, char)] = &[
+    ("NUL", '\x00'),
+    ("SOH", '\x01'),
+    ("STX", '\x02'),
+    ("ETX", '\x03'),
+    ("EOT", '\x04'),
+    ("ENQ", '\x05'),
+    ("ACK", '\x06'),
+    ("BEL", '\x07'),
+    ("BS", '\x08'),
+    ("HT", '\x09'),
+    ("LF", '\x0A'),
+    ("VT", '\x0B'),
+    ("FF", '\x0C'),
+    ("CR", '\x0D'),
+    ("SO", '\x0E'),
+    ("SI", '\x0F'),
+    ("DLE", '\x10'),
+    ("DC1", '\x11'),
+    ("DC2", '\x12'),
+    ("DC3", '\x13'),
+    ("DC4", '\x14'),
+    ("NAK", '\x15'),
+    ("SYN", '\x16'),
+    ("ETB", '\x17'),
+    ("CAN", '\x18'),
+    ("EM", '\x19'),
+    ("SUB", '\x1A'),
+    ("ESC", '\x1B'),
+    ("FS", '\x1C'),
+    ("GS", '\x1D'),
+    ("RS", '\x1E'),
+    ("US", '\x1F'),
+    ("SP", '\x20'),
+    ("DEL", '\x7F'),
+];
+
 fn parse_escape(input: &str) -> Result<(char, &str), HaskellParseError> {
     let c = input
         .chars()
@@ -482,6 +550,10 @@ fn parse_escape(input: &str) -> Result<(char, &str), HaskellParseError> {
         'n' => Ok(('\n', &input[1..])),
         't' => Ok(('\t', &input[1..])),
         'r' => Ok(('\r', &input[1..])),
+        'a' => Ok(('\x07', &input[1..])),
+        'b' => Ok(('\x08', &input[1..])),
+        'f' => Ok(('\x0C', &input[1..])),
+        'v' => Ok(('\x0B', &input[1..])),
         '0' => Ok(('\0', &input[1..])),
         c if c.is_ascii_digit() => {
             // Numeric escape: \NNN
@@ -497,6 +569,17 @@ fn parse_escape(input: &str) -> Result<(char, &str), HaskellParseError> {
                 message: format!("invalid unicode code point: {num}"),
             })?;
             Ok((c, &input[end..]))
+        }
+        c if c.is_ascii_uppercase() => {
+            // Named ASCII escapes: \NUL, \SOH, \DEL, etc.
+            for &(name, ch) in NAMED_ESCAPES {
+                if let Some(rest) = input.strip_prefix(name) {
+                    return Ok((ch, rest));
+                }
+            }
+            Err(HaskellParseError::ParseError {
+                message: format!("unknown escape sequence: \\{c}"),
+            })
         }
         _ => Err(HaskellParseError::ParseError {
             message: format!("unknown escape sequence: \\{c}"),
@@ -1102,6 +1185,10 @@ mod tests {
         assert_eq!(f64::NAN.to_haskell(), "(0/0)");
         assert_eq!(f64::INFINITY.to_haskell(), "(1/0)");
         assert_eq!(f64::NEG_INFINITY.to_haskell(), "((-1)/0)");
+        // Precision is preserved
+        assert_eq!(1.234_567_890_123_456_f64.to_haskell(), "1.234567890123456");
+        assert_eq!((-0.001f64).to_haskell(), "(-0.001)");
+        assert_eq!(1.0f32.to_haskell(), "1.0");
     }
 
     #[test]
@@ -1202,6 +1289,67 @@ mod tests {
         assert_eq!(char::from_haskell("'x'").unwrap(), 'x');
         assert_eq!(char::from_haskell("'\\''").unwrap(), '\'');
         assert_eq!(char::from_haskell("'\\n'").unwrap(), '\n');
+    }
+
+    #[test]
+    fn single_char_escapes_from_haskell() {
+        assert_eq!(char::from_haskell("'\\a'").unwrap(), '\x07');
+        assert_eq!(char::from_haskell("'\\b'").unwrap(), '\x08');
+        assert_eq!(char::from_haskell("'\\f'").unwrap(), '\x0C');
+        assert_eq!(char::from_haskell("'\\v'").unwrap(), '\x0B');
+    }
+
+    #[test]
+    fn named_escapes_from_haskell() {
+        assert_eq!(String::from_haskell(r#""\NUL""#).unwrap(), "\x00");
+        assert_eq!(String::from_haskell(r#""\SOH""#).unwrap(), "\x01");
+        assert_eq!(String::from_haskell(r#""\STX""#).unwrap(), "\x02");
+        assert_eq!(String::from_haskell(r#""\ETX""#).unwrap(), "\x03");
+        assert_eq!(String::from_haskell(r#""\EOT""#).unwrap(), "\x04");
+        assert_eq!(String::from_haskell(r#""\ENQ""#).unwrap(), "\x05");
+        assert_eq!(String::from_haskell(r#""\ACK""#).unwrap(), "\x06");
+        assert_eq!(String::from_haskell(r#""\BEL""#).unwrap(), "\x07");
+        assert_eq!(String::from_haskell(r#""\BS""#).unwrap(), "\x08");
+        assert_eq!(String::from_haskell(r#""\HT""#).unwrap(), "\x09");
+        assert_eq!(String::from_haskell(r#""\LF""#).unwrap(), "\x0A");
+        assert_eq!(String::from_haskell(r#""\VT""#).unwrap(), "\x0B");
+        assert_eq!(String::from_haskell(r#""\FF""#).unwrap(), "\x0C");
+        assert_eq!(String::from_haskell(r#""\CR""#).unwrap(), "\x0D");
+        assert_eq!(String::from_haskell(r#""\SO""#).unwrap(), "\x0E");
+        assert_eq!(String::from_haskell(r#""\SI""#).unwrap(), "\x0F");
+        assert_eq!(String::from_haskell(r#""\DLE""#).unwrap(), "\x10");
+        assert_eq!(String::from_haskell(r#""\DC1""#).unwrap(), "\x11");
+        assert_eq!(String::from_haskell(r#""\DC2""#).unwrap(), "\x12");
+        assert_eq!(String::from_haskell(r#""\DC3""#).unwrap(), "\x13");
+        assert_eq!(String::from_haskell(r#""\DC4""#).unwrap(), "\x14");
+        assert_eq!(String::from_haskell(r#""\NAK""#).unwrap(), "\x15");
+        assert_eq!(String::from_haskell(r#""\SYN""#).unwrap(), "\x16");
+        assert_eq!(String::from_haskell(r#""\ETB""#).unwrap(), "\x17");
+        assert_eq!(String::from_haskell(r#""\CAN""#).unwrap(), "\x18");
+        assert_eq!(String::from_haskell(r#""\EM""#).unwrap(), "\x19");
+        assert_eq!(String::from_haskell(r#""\SUB""#).unwrap(), "\x1A");
+        assert_eq!(String::from_haskell(r#""\ESC""#).unwrap(), "\x1B");
+        assert_eq!(String::from_haskell(r#""\FS""#).unwrap(), "\x1C");
+        assert_eq!(String::from_haskell(r#""\GS""#).unwrap(), "\x1D");
+        assert_eq!(String::from_haskell(r#""\RS""#).unwrap(), "\x1E");
+        assert_eq!(String::from_haskell(r#""\US""#).unwrap(), "\x1F");
+        assert_eq!(String::from_haskell(r#""\SP""#).unwrap(), "\x20");
+        assert_eq!(String::from_haskell(r#""\DEL""#).unwrap(), "\x7F");
+    }
+
+    #[test]
+    fn so_soh_prefix_conflict() {
+        // SOH must match before SO to avoid prefix conflict
+        assert_eq!(String::from_haskell(r#""\SOH""#).unwrap(), "\x01");
+        assert_eq!(String::from_haskell(r#""\SO""#).unwrap(), "\x0E");
+    }
+
+    #[test]
+    fn empty_escape_disambiguation() {
+        // \& is Haskell's empty escape for disambiguating named escapes
+        // "\SO\&H" is SO (0x0E) followed by 'H', not SOH (0x01)
+        assert_eq!(String::from_haskell(r#""\SO\&H""#).unwrap(), "\x0EH");
+        assert_eq!(String::from_haskell(r#""\NUL\&0""#).unwrap(), "\x000");
     }
 
     #[test]

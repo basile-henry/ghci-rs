@@ -445,9 +445,15 @@ impl FromHaskell for String {
             match c {
                 '"' => return Ok((result, &rest[1..])),
                 '\\' => {
-                    let (escaped, after) = parse_escape(&rest[1..])?;
-                    result.push(escaped);
-                    rest = after;
+                    if rest[1..].starts_with('&') {
+                        // \& is Haskell's empty escape, used to disambiguate
+                        // named escapes (e.g. "\SO\&H" is SO followed by 'H')
+                        rest = &rest[2..];
+                    } else {
+                        let (escaped, after) = parse_escape(&rest[1..])?;
+                        result.push(escaped);
+                        rest = after;
+                    }
                 }
                 _ => {
                     result.push(c);
@@ -1326,6 +1332,14 @@ mod tests {
         // SOH must match before SO to avoid prefix conflict
         assert_eq!(String::from_haskell(r#""\SOH""#).unwrap(), "\x01");
         assert_eq!(String::from_haskell(r#""\SO""#).unwrap(), "\x0E");
+    }
+
+    #[test]
+    fn empty_escape_disambiguation() {
+        // \& is Haskell's empty escape for disambiguating named escapes
+        // "\SO\&H" is SO (0x0E) followed by 'H', not SOH (0x01)
+        assert_eq!(String::from_haskell(r#""\SO\&H""#).unwrap(), "\x0EH");
+        assert_eq!(String::from_haskell(r#""\NUL\&0""#).unwrap(), "\x000");
     }
 
     #[test]

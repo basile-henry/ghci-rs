@@ -84,6 +84,8 @@ fn string_with_escapes_roundtrip() {
     roundtrip("quote\"inside".to_string());
     roundtrip("null\0char".to_string());
     roundtrip("\x07bell".to_string());
+    // Strings that trigger \& disambiguation in ghci's show
+    roundtrip("\x0EH".to_string()); // SO followed by 'H' (not SOH)
 }
 
 // ── Booleans ────────────────────────────────────────────────────────

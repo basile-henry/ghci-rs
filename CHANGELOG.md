@@ -7,7 +7,7 @@
 - Float `ToHaskell` no longer truncates to 1 decimal place — full precision is preserved.
 - `Drop` impl no longer panics if the child process is in an unexpected state.
 - `clear_blocking_reader_until` no longer panics when ghci startup output exceeds 1024 bytes.
-- `FromHaskell` now handles all Haskell escape sequences (`\a`, `\b`, `\f`, `\v`, and named escapes like `\NUL`, `\SOH`, `\DEL`, etc.).
+- `FromHaskell` now handles all Haskell escape sequences (`\a`, `\b`, `\f`, `\v`, named escapes like `\NUL`, `\SOH`, `\DEL`, and the `\&` empty escape for disambiguation).
 
 ### Added
 

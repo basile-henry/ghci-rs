@@ -179,7 +179,17 @@ impl_to_haskell_float!(f32, f64);
 impl ToHaskell for str {
     fn write_haskell(&self, buf: &mut impl fmt::Write) -> fmt::Result {
         buf.write_char('"')?;
+        let mut prev_was_numeric_escape = false;
         for c in self.chars() {
+            // After a numeric escape like \0 or \31, a following digit would
+            // be consumed as part of the escape. Insert \& to disambiguate.
+            if prev_was_numeric_escape && c.is_ascii_digit() {
+                buf.write_str("\\&")?;
+            }
+            // \0 and other control chars (except \n, \t, \r which use named
+            // escapes) produce numeric escapes
+            prev_was_numeric_escape =
+                c == '\0' || (c.is_ascii_control() && !matches!(c, '\n' | '\t' | '\r'));
             write_haskell_char_escaped(buf, c, '"')?;
         }
         buf.write_char('"')

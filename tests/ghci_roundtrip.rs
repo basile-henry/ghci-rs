@@ -84,8 +84,10 @@ fn string_with_escapes_roundtrip() {
     roundtrip("quote\"inside".to_string());
     roundtrip("null\0char".to_string());
     roundtrip("\x07bell".to_string());
-    // Strings that trigger \& disambiguation in ghci's show
+    // Strings that trigger \& disambiguation
     roundtrip("\x0EH".to_string()); // SO followed by 'H' (not SOH)
+    roundtrip("\x000".to_string()); // NUL followed by '0'
+    roundtrip("\x011".to_string()); // SOH followed by '1'
 }
 
 // ── Booleans ────────────────────────────────────────────────────────

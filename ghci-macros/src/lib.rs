@@ -37,6 +37,12 @@ struct GhciMacroInput {
 impl Parse for GhciMacroInput {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let ghci_expr: Expr = input.parse()?;
+        // Normalize: wrap with &mut if not already a mutable reference, so both
+        // `ghci` and `&mut ghci` are accepted in addition to `&mut *ghci`.
+        let ghci_expr = match &ghci_expr {
+            Expr::Reference(r) if r.mutability.is_some() => ghci_expr,
+            _ => syn::parse_quote!(&mut #ghci_expr),
+        };
         input.parse::<Token![,]>()?;
 
         let bindings = if input.peek(syn::token::Bracket) {
@@ -109,14 +115,18 @@ fn expand_ghci(input: GhciMacroInput) -> TokenStream2 {
 ///
 /// ```rust,ignore
 /// // No bindings:
-/// ghci!(&mut ghci, { 1 + 2 })
+/// ghci!(ghci, { 1 + 2 })
 ///
 /// // With bindings (Rust vars injected as Haskell let-bindings):
-/// ghci!(&mut ghci, [x, y] { x ++ " " ++ y })
+/// ghci!(ghci, [x, y] { x ++ " " ++ y })
 ///
 /// // Expression bindings:
-/// ghci!(&mut ghci, [z = some_expr] { z * 10 })
+/// ghci!(ghci, [z = some_expr] { z * 10 })
 /// ```
+///
+/// The first argument is always taken by mutable reference internally. Passing
+/// `ghci`, `&mut ghci`, or `&mut *ghci` (for a dereffed smart pointer) are all
+/// accepted.
 ///
 /// Returns `Result<T>` where `T` is inferred from context (via `FromHaskell`).
 ///

@@ -39,6 +39,9 @@ pub use haskell::{FromHaskell, HaskellParseError, ToHaskell};
 #[cfg(feature = "derive")]
 pub use ghci_derive::{FromHaskell, ToHaskell};
 
+#[cfg(feature = "macros")]
+pub use ghci_macros::ghci;
+
 /// A ghci session handle
 ///
 /// The session is stateful, so the order of interaction matters

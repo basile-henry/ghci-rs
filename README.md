@@ -49,6 +49,31 @@ struct Pair(u32, bool);
 
 See the [derive macro docs](https://docs.rs/ghci-derive) for all supported attributes (`name`, `transparent`, `style`, `skip`, `bound`).
 
+### Inline Haskell with `ghci!`
+
+With the `macros` feature, use the `ghci!` macro to write inline Haskell expressions and inject Rust values as let-bindings:
+
+```rust
+use ghci::{ghci, Ghci, ToHaskell};
+
+let mut ghci = Ghci::new()?;
+ghci.import(&["Data.Char"])?;
+
+// Simple expression
+let n: i32 = ghci!(&mut ghci, { length "hello" })?;
+assert_eq!(n, 5);
+
+// Inject Rust values as Haskell bindings
+let name = "world".to_string();
+let greeting: String = ghci!(&mut ghci, [name] { map toUpper name })?;
+assert_eq!(greeting, "WORLD");
+
+// Bind with a different Haskell name
+let items: Vec<i32> = vec![3, 1, 4, 1, 5];
+let sorted: Vec<i32> = ghci!(&mut ghci, [xs = items] { sort xs })?;
+assert_eq!(sorted, vec![1, 1, 3, 4, 5]);
+```
+
 ### Configuration
 
 Use `GhciBuilder` to configure the ghci session:

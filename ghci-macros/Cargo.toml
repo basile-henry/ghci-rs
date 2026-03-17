@@ -1,0 +1,19 @@
+[package]
+name = "ghci-macros"
+version = "0.2.1"
+repository = "https://github.com/basile-henry/ghci-rs"
+authors = ["Basile Henry <bjm.henry@gmail.com>"]
+license = "MIT"
+edition = "2021"
+description = "Proc macros for inline Haskell evaluation via ghci"
+readme = "../README.md"
+keywords = ["haskell", "repl", "subprocess", "ffi"]
+categories = ["compilers", "development-tools"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"

@@ -122,6 +122,7 @@ fn resolve_style(style: Option<Style>) -> Style {
 /// # Variant attributes (`#[haskell(...)]`)
 ///
 /// - `name = "haskell_name"` — override the Haskell constructor name
+/// - `transparent` — single-field variant: delegate to the inner field's impl
 /// - `style = "app"` / `style = "record"` — override container default
 ///
 /// # Field attributes (`#[haskell(...)]`)
@@ -174,6 +175,13 @@ fn expand_to_haskell(input: DeriveInput) -> syn::Result<TokenStream2> {
                 .map(|v| {
                     let variant_ident = &v.ident;
                     let variant_attrs = parse_haskell_attrs(&v.attrs);
+                    if variant_attrs.transparent {
+                        return expand_to_haskell_transparent_variant(
+                            ident,
+                            variant_ident,
+                            &v.fields,
+                        );
+                    }
                     let variant_name = variant_attrs
                         .name
                         .unwrap_or_else(|| variant_ident.to_string());
@@ -298,6 +306,32 @@ fn expand_to_haskell_transparent_struct(fields: &Fields) -> syn::Result<TokenStr
     }
 }
 
+fn expand_to_haskell_transparent_variant(
+    enum_ident: &syn::Ident,
+    variant_ident: &syn::Ident,
+    fields: &Fields,
+) -> syn::Result<TokenStream2> {
+    match fields {
+        Fields::Named(named) if named.named.len() == 1 => {
+            let field_ident = named.named[0].ident.as_ref().unwrap();
+            Ok(quote! {
+                #enum_ident::#variant_ident { #field_ident } => {
+                    ::ghci::ToHaskell::write_haskell(#field_ident, buf)
+                }
+            })
+        }
+        Fields::Unnamed(unnamed) if unnamed.unnamed.len() == 1 => Ok(quote! {
+            #enum_ident::#variant_ident(__f0) => {
+                ::ghci::ToHaskell::write_haskell(__f0, buf)
+            }
+        }),
+        _ => Err(syn::Error::new_spanned(
+            variant_ident,
+            "`#[haskell(transparent)]` requires exactly one field",
+        )),
+    }
+}
+
 fn expand_to_haskell_variant(
     enum_ident: &syn::Ident,
     variant_ident: &syn::Ident,
@@ -383,6 +417,7 @@ fn expand_to_haskell_variant(
 /// # Variant attributes (`#[haskell(...)]`)
 ///
 /// - `name = "haskell_name"` — override the Haskell constructor name
+/// - `transparent` — single-field variant: delegate to the inner field's impl
 /// - `style = "app"` / `style = "record"` — override container default
 ///
 /// # Field attributes (`#[haskell(...)]`)
@@ -439,6 +474,13 @@ fn expand_from_haskell(input: DeriveInput) -> syn::Result<TokenStream2> {
                 .map(|v| {
                     let variant_ident = &v.ident;
                     let variant_attrs = parse_haskell_attrs(&v.attrs);
+                    if variant_attrs.transparent {
+                        return expand_from_haskell_transparent_variant(
+                            ident,
+                            variant_ident,
+                            &v.fields,
+                        );
+                    }
                     let variant_name = variant_attrs
                         .name
                         .unwrap_or_else(|| variant_ident.to_string());
@@ -568,6 +610,32 @@ fn expand_from_haskell_transparent_struct(fields: &Fields) -> syn::Result<TokenS
         }),
         _ => Err(syn::Error::new(
             proc_macro2::Span::call_site(),
+            "`#[haskell(transparent)]` requires exactly one field",
+        )),
+    }
+}
+
+fn expand_from_haskell_transparent_variant(
+    enum_ident: &syn::Ident,
+    variant_ident: &syn::Ident,
+    fields: &Fields,
+) -> syn::Result<TokenStream2> {
+    match fields {
+        Fields::Named(named) if named.named.len() == 1 => {
+            let field_ident = named.named[0].ident.as_ref().unwrap();
+            Ok(quote! {
+                if let ::core::result::Result::Ok((val, rest)) = ::ghci::FromHaskell::parse_haskell(input) {
+                    return ::core::result::Result::Ok((#enum_ident::#variant_ident { #field_ident: val }, rest));
+                }
+            })
+        }
+        Fields::Unnamed(unnamed) if unnamed.unnamed.len() == 1 => Ok(quote! {
+            if let ::core::result::Result::Ok((val, rest)) = ::ghci::FromHaskell::parse_haskell(input) {
+                return ::core::result::Result::Ok((#enum_ident::#variant_ident(val), rest));
+            }
+        }),
+        _ => Err(syn::Error::new_spanned(
+            variant_ident,
             "`#[haskell(transparent)]` requires exactly one field",
         )),
     }

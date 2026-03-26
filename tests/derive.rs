@@ -431,6 +431,74 @@ fn skip_field_enum_variant_roundtrip() {
     );
 }
 
+// ── transparent enum variant (tuple) ─────────────────────────────────
+
+#[derive(Debug, PartialEq, ToHaskell, FromHaskell)]
+enum Value {
+    #[haskell(transparent)]
+    Int(i64),
+    #[haskell(transparent)]
+    Text(String),
+    Nil,
+}
+
+#[test]
+fn transparent_variant_to_haskell() {
+    assert_eq!(Value::Int(42).to_haskell(), "42");
+    assert_eq!(Value::Text("hello".into()).to_haskell(), "\"hello\"");
+    assert_eq!(Value::Nil.to_haskell(), "Nil");
+}
+
+#[test]
+fn transparent_variant_from_haskell() {
+    // Int is tried first and succeeds for integer input
+    assert_eq!(Value::from_haskell("42").unwrap(), Value::Int(42));
+    // "hello" doesn't parse as i64, so falls through to Text
+    assert_eq!(
+        Value::from_haskell("\"hello\"").unwrap(),
+        Value::Text("hello".into())
+    );
+    assert_eq!(Value::from_haskell("Nil").unwrap(), Value::Nil);
+}
+
+#[test]
+fn transparent_variant_roundtrip() {
+    for v in [Value::Int(-7), Value::Text("world".into()), Value::Nil] {
+        assert_eq!(Value::from_haskell(&v.to_haskell()).unwrap(), v);
+    }
+}
+
+// ── transparent enum variant (named field) ───────────────────────────
+
+#[derive(Debug, PartialEq, ToHaskell, FromHaskell)]
+enum Measure {
+    #[haskell(transparent)]
+    Distance { meters: f64 },
+    #[haskell(transparent)]
+    Count { n: u32 },
+}
+
+#[test]
+fn transparent_named_variant_to_haskell() {
+    assert_eq!(Measure::Distance { meters: 3.5 }.to_haskell(), "3.5");
+    assert_eq!(Measure::Count { n: 10 }.to_haskell(), "10");
+}
+
+#[test]
+fn transparent_named_variant_from_haskell() {
+    // f64 parses "10" successfully, so Distance is matched first
+    assert_eq!(
+        Measure::from_haskell("3.5").unwrap(),
+        Measure::Distance { meters: 3.5 }
+    );
+}
+
+#[test]
+fn transparent_named_variant_roundtrip() {
+    let m = Measure::Distance { meters: 1.23 };
+    assert_eq!(Measure::from_haskell(&m.to_haskell()).unwrap(), m);
+}
+
 // ── explicit style = "record" ───────────────────────────────────────
 
 #[derive(Debug, PartialEq, ToHaskell, FromHaskell)]
